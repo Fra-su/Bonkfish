@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://dcy7ih5xhnepb"
+path="res://.godot/imported/ButterflyFish.obj-34afc07cf1a931b4a8df2deb82edb230.mesh"
+
+[deps]
+
+files=["res://.godot/imported/ButterflyFish.obj-34afc07cf1a931b4a8df2deb82edb230.mesh"]
+
+source_file="res://Fish/OBJ/ButterflyFish.obj"
+dest_files=["res://.godot/imported/ButterflyFish.obj-34afc07cf1a931b4a8df2deb82edb230.mesh", "res://.godot/imported/ButterflyFish.obj-34afc07cf1a931b4a8df2deb82edb230.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

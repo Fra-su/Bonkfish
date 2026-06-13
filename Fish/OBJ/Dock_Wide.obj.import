@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://d3qnunwf7204m"
+path="res://.godot/imported/Dock_Wide.obj-c8e0096235537d2fa93218f1eb9b1844.mesh"
+
+[deps]
+
+files=["res://.godot/imported/Dock_Wide.obj-c8e0096235537d2fa93218f1eb9b1844.mesh"]
+
+source_file="res://Fish/OBJ/Dock_Wide.obj"
+dest_files=["res://.godot/imported/Dock_Wide.obj-c8e0096235537d2fa93218f1eb9b1844.mesh", "res://.godot/imported/Dock_Wide.obj-c8e0096235537d2fa93218f1eb9b1844.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false
