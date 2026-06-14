@@ -1,0 +1,29 @@
+[gd_scene format=3 uid="uid://bjbtyoqv7taj4"]
+
+[ext_resource type="Script" uid="uid://dd8umq7ofieks" path="res://Dummy.gd" id="1_0o31p"]
+[ext_resource type="PackedScene" uid="uid://d1dtoudui2o0w" path="res://Human Model/Human Model.glb" id="2_eo5lk"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_0o31p"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_eo5lk"]
+radius = 0.34716797
+height = 1.8129883
+
+[node name="Dummy" type="CharacterBody3D" unique_id=868771836]
+script = ExtResource("1_0o31p")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1870740341]
+visible = false
+mesh = SubResource("CapsuleMesh_0o31p")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1464828893]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.09350586, 0)
+shape = SubResource("CapsuleShape3D_eo5lk")
+
+[node name="Label3D" type="Label3D" parent="." unique_id=729349449]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1215025, 0)
+text = "Dummy
+"
+
+[node name="Human Model" parent="." unique_id=1808975854 instance=ExtResource("2_eo5lk")]
+transform = Transform3D(-0.3, 4.554242e-09, 2.5828388e-08, 0, 0.29544234, -0.052094456, -2.6226834e-08, -0.052094456, -0.29544234, 0, -0.10185814, 0)
