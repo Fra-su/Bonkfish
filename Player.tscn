@@ -131,10 +131,3 @@ mesh = ExtResource("2_kpjcp")
 root_node = NodePath("../../HandMesh")
 libraries/ = SubResource("AnimationLibrary_kne1u")
 
-[node name="Area3D" type="Area3D" parent="Head/Camera3D/FishItem" unique_id=722105235]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Head/Camera3D/FishItem/Area3D" unique_id=52246219]
-transform = Transform3D(0.7587538, -0.042538196, 0.6499878, -0.042538367, 0.9924984, 0.11461043, -0.649988, -0.11461033, 0.75125265, 0.16400385, -0.049044847, -0.58179235)
-shape = SubResource("BoxShape3D_xhfnw")
-
-[connection signal="body_entered" from="Head/Camera3D/FishItem/Area3D" to="." method="_on_area_3d_body_entered"]

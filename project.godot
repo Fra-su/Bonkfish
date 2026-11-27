@@ -10,9 +10,13 @@ config_version=5
 
 [application]
 
-config/name="Fish"
-run/main_scene="res://world.tscn"
-config/features=PackedStringArray("4.6", "GL Compatibility")
+config/name="Bonkfish"
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[autoload]
+
+Net="*res://Net.gd"
 
 [display]
 
@@ -59,7 +63,10 @@ View_toggle={
 
 [physics]
 
+common/physics_ticks_per_second=120
 3d/physics_engine="Jolt Physics"
+jolt_physics_3d/simulation/velocity_steps=16
+jolt_physics_3d/simulation/position_steps=8
 
 [rendering]
 

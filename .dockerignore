@@ -1,0 +1,6 @@
+.godot/
+.git/
+deploy/
+addons/godotsteam/
+*.exe
+*.dll

@@ -1,0 +1,26 @@
+# Bonkfish dedicated server for Railway.
+# Runs the project source with the official headless Godot 4.7.1 (no export templates needed).
+# Railway: set the service variable RAILWAY_DOCKERFILE_PATH=Dockerfile.server
+FROM debian:bookworm-slim
+
+ARG GODOT_VERSION=4.7.1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip libfontconfig1 \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL -o /tmp/godot.zip \
+    "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
+ && unzip /tmp/godot.zip -d /tmp \
+ && mv /tmp/Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot \
+ && chmod +x /usr/local/bin/godot \
+ && rm /tmp/godot.zip
+
+WORKDIR /game
+COPY . /game
+# Steam is desktop-only; the server never uses it.
+RUN rm -rf /game/addons/godotsteam /game/deploy \
+ && godot --headless --path /game --import || true
+
+# Railway injects $PORT; Net.gd listens on it (7777 when unset).
+ENV PORT=7777
+EXPOSE 7777
+CMD ["godot", "--headless", "--path", "/game", "--", "--server"]
