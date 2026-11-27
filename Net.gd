@@ -40,6 +40,7 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_on_failed)
 	multiplayer.server_disconnected.connect(_on_server_gone)
 	if is_dedicated_launch():
+		print("Bonkfish: starting in dedicated server mode (PORT env = '%s')" % OS.get_environment("PORT"))
 		host_dedicated.call_deferred()
 		return
 	_init_steam()
