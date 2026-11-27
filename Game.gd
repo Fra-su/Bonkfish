@@ -30,6 +30,7 @@ var next_pid := 0
 var alive: Array = []
 var ready_peers := {}
 var started_with := 0     # players alive when the round began (server)
+var started_teams := 0    # teams with fish when the round began (server, Teams mode)
 var round_num := 0
 var round_time := 0.0
 var drop_timer := 0.0
@@ -46,20 +47,56 @@ var pause_panel: PanelContainer
 var tile_mats: Array[StandardMaterial3D] = []
 
 
+var room_code := ""   # set by Net before this node enters the tree (node name is "Room_<code>")
+
+
+## This room's players: {id: {name, color, score, fish, team}}.
+func roster() -> Dictionary:
+	return Net.roster(room_code)
+
+
+## Peer ids in this room.
+func members() -> Array:
+	return roster().keys()
+
+
+func settings() -> Dictionary:
+	return Net.room_view(room_code)
+
+
+func is_teams() -> bool:
+	return settings().get("mode", Net.MODE_FFA) == Net.MODE_TEAMS
+
+
+func wins_needed() -> int:
+	return settings().get("wins", 3)
+
+
+## Server -> everyone in this room: run `method` here and on every member's copy of this node.
+## (A plain .rpc() would reach players in other rooms too.)
+func bc(method: String, args := []) -> void:
+	var me := multiplayer.get_unique_id()
+	for id in members():
+		if id != me:
+			callv("rpc_id", [id, method] + args)
+	callv(method, args)
+
+
 func _ready() -> void:
 	_build_environment()
 	_build_hud()
 	players_node = Node3D.new()
 	players_node.name = "Players"
 	add_child(players_node)
-	var ids := Net.players.keys()
+	var ids := members()
 	ids.sort()
 	for id in ids:
 		_spawn_player(id)
-	Net.player_left.connect(_on_player_left)
+	Net.player_left.connect(_on_net_player_left)
 	_build_tiles(10.5)
 	if multiplayer.is_server():
-		_peer_ready()
+		if multiplayer.get_unique_id() in ids:
+			_peer_ready()
 	else:
 		_peer_ready.rpc_id(1)
 
@@ -167,7 +204,7 @@ func standing_tiles() -> Array:
 
 
 func spawn_point(id: int) -> Vector3:
-	var ids := Net.players.keys()
+	var ids := members()
 	ids.sort()
 	var i := maxi(ids.find(id), 0)
 	var r := 3.5 if modifier == TINY else 6.0
@@ -198,14 +235,23 @@ func local_player() -> Node:
 
 
 func pname(id: int) -> String:
-	return Net.players[id]["name"] if Net.players.has(id) else "???"
+	if roster().has(id):
+		return roster()[id]["name"]
+	var p := get_player(id)
+	return p.display_name if p else "???"
+
+
+func _on_net_player_left(code: String, id: int) -> void:
+	if code == room_code:
+		_on_player_left(id)
 
 
 func _on_player_left(id: int) -> void:
 	var p := get_player(id)
-	if p:
-		p.queue_free()
-	add_feed("%s swam away" % pname(id))
+	if p == null or p.is_queued_for_deletion():
+		return  # already handled (a listen-host hears about it twice)
+	add_feed("%s swam away" % p.display_name)
+	p.queue_free()
 	if multiplayer.is_server():
 		alive.erase(id)
 		_check_end()
@@ -222,16 +268,16 @@ func _peer_ready() -> void:
 	if not multiplayer.is_server():
 		return
 	ready_peers[multiplayer.get_remote_sender_id() if multiplayer.get_remote_sender_id() != 0 else 1] = true
-	# Only count real players (a dedicated server is peer 1 but not a player).
-	var all_ready := Net.players.keys().all(func(id): return ready_peers.has(id))
-	if all_ready and not Net.players.is_empty() and state == "waiting":
+	# Only count this room's players (a dedicated server is peer 1 but not a player).
+	var all_ready := members().all(func(id): return ready_peers.has(id))
+	if all_ready and not members().is_empty() and state == "waiting":
 		_server_start_round()
 
 
 func _server_start_round() -> void:
 	var m := CLASSIC if round_num == 0 else randi() % MODIFIERS.size()
 	round_num += 1
-	_begin_round.rpc(m)
+	bc("_begin_round", [m])
 
 
 @rpc("authority", "call_local", "reliable")
@@ -273,6 +319,10 @@ func _countdown() -> void:
 	if multiplayer.is_server():
 		alive = get_players().map(func(p): return p.name.to_int())
 		started_with = alive.size()
+		var t := {}
+		for id in alive:
+			t[team_of(id)] = true
+		started_teams = t.size()
 	await get_tree().create_timer(0.8).timeout
 	if state == "fight":
 		show_banner("", "")
@@ -294,12 +344,12 @@ func _process(delta: float) -> void:
 			if standing.size() > 2:
 				standing.sort_custom(func(a, b): return a.position.length() > b.position.length())
 				var pick: Node = standing[randi() % mini(3, standing.size())]
-				_drop_tile.rpc(tiles.find(pick))
+				bc("_drop_tile", [tiles.find(pick)])
 	# Boat sweeps
 	boat_timer -= delta
 	if boat_timer <= 0.0 and round_time > 10.0:
 		boat_timer = randf_range(15.0, 24.0)
-		_boat_incoming.rpc(randf() * TAU, randf_range(-6.0, 6.0))
+		bc("_boat_incoming", [randf() * TAU, randf_range(-6.0, 6.0)])
 	# Powerups
 	power_timer -= delta
 	var cap := 8 if modifier == FRENZY else 3
@@ -309,7 +359,7 @@ func _process(delta: float) -> void:
 		if powerups.size() < cap and standing.size() > 0:
 			var t: Node3D = standing[randi() % standing.size()]
 			next_pid += 1
-			_spawn_powerup.rpc(next_pid, randi() % Powerup.INFO.size(), t.position + Vector3(0, 1.6, 0))
+			bc("_spawn_powerup", [next_pid, randi() % Powerup.INFO.size(), t.position + Vector3(0, 1.6, 0)])
 
 
 @rpc("authority", "call_local", "reliable")
@@ -403,7 +453,9 @@ func request_pickup(pid: int) -> void:
 	if not multiplayer.is_server() or not powerups.has(pid):
 		return
 	var who := multiplayer.get_remote_sender_id()
-	_powerup_taken.rpc(pid, who if who != 0 else 1)
+	if who != 0 and not members().has(who):
+		return
+	bc("_powerup_taken", [pid, who if who != 0 else 1])
 
 
 @rpc("authority", "call_local", "reliable")
@@ -430,7 +482,7 @@ func report_fall(hitter: int) -> void:
 	if state != "fight" or not alive.has(id):
 		return
 	alive.erase(id)
-	_player_out.rpc(id, hitter)
+	bc("_player_out", [id, hitter])
 	_check_end()
 
 
@@ -445,43 +497,77 @@ func _player_out(id: int, hitter: int) -> void:
 		add_feed("%s fell in. Splash!" % pname(id))
 
 
+func team_of(id: int) -> int:
+	return roster().get(id, {}).get("team", 0)
+
+
 func _check_end() -> void:
 	if state != "fight":
 		return
-	var total := get_players().filter(func(p): return not p.is_queued_for_deletion()).size()
-	# Multiplayer round: ends at one fish left (also when others quit). Solo practice: when you fall.
-	if not ((started_with > 1 and alive.size() <= 1) or alive.size() == 0):
+	# Teams: ends when only one team has fish left. FFA: one fish left (also when others quit).
+	# Solo practice: when you fall.
+	var teams_round := is_teams() and started_teams > 1
+	var done := false
+	if teams_round:
+		var left := {}
+		for id in alive:
+			left[team_of(id)] = true
+		done = left.size() <= 1
+	else:
+		done = (started_with > 1 and alive.size() <= 1) or alive.size() == 0
+	if not done:
 		return
 	state = "over"
-	var winner: int = alive[0] if alive.size() == 1 else -1
-	if winner != -1 and Net.players.has(winner):
-		Net.players[winner]["score"] += 1
-		Net.sync_players.rpc(Net.players)
-	_round_over.rpc(winner)
+	var winner := -1
+	var team := -1
+	var scorers := []
+	if teams_round:
+		if not alive.is_empty():
+			team = team_of(alive[0])
+			scorers = members().filter(func(id): return team_of(id) == team)
+	elif alive.size() == 1:
+		winner = alive[0]
+		scorers = [winner]
+	var match_done := false
+	if not scorers.is_empty() and started_with > 1:
+		Net.add_score(room_code, scorers)
+		match_done = scorers.any(func(id): return roster().has(id) and roster()[id]["score"] >= wins_needed())
+	bc("_round_over", [winner, team])
 	await get_tree().create_timer(4.0).timeout
-	if winner != -1 and Net.players.has(winner) and Net.players[winner]["score"] >= Net.WIN_SCORE and total > 1:
-		_match_over.rpc(winner)
+	if not is_inside_tree():
+		return
+	if match_done:
+		bc("_match_over", [winner, team])
 		await get_tree().create_timer(6.0).timeout
-		Net.go_lobby.rpc()
+		if is_inside_tree():
+			Net.end_match(room_code)
 	else:
 		_server_start_round()
 
 
 @rpc("authority", "call_local", "reliable")
-func _round_over(winner: int) -> void:
+func _round_over(winner: int, team: int) -> void:
 	state = "over"
-	if winner == -1:
+	if team >= 0:
+		show_banner("%s TEAM WINS!" % Net.TEAM_NAMES[team].to_upper(), "Last team standing")
+		for p in get_players():
+			if team_of(p.name.to_int()) == team and not p.out:
+				burst(p.global_position + Vector3(0, 2, 0), Net.TEAM_COLORS[team], 40)
+	elif winner == -1:
 		show_banner("SPLASH!", "Everyone's swimming. Next round...")
 	else:
 		show_banner("%s WINS!" % pname(winner).to_upper(), "Last fish standing")
 		var p := get_player(winner)
 		if p:
-			burst(p.global_position + Vector3(0, 2, 0), Net.players[winner]["color"], 60)
+			burst(p.global_position + Vector3(0, 2, 0), p.color, 60)
 
 
 @rpc("authority", "call_local", "reliable")
-func _match_over(winner: int) -> void:
-	show_banner("%s IS THE BIG FISH!" % pname(winner).to_upper(), "Back to the dock in a moment...")
+func _match_over(winner: int, team: int) -> void:
+	if team >= 0:
+		show_banner("%s TEAM TAKES THE MATCH!" % Net.TEAM_NAMES[team].to_upper(), "Back to the dock in a moment...")
+	else:
+		show_banner("%s IS THE BIG FISH!" % pname(winner).to_upper(), "Back to the dock in a moment...")
 
 
 # --- effects ---------------------------------------------------------------------
@@ -596,9 +682,7 @@ func _build_hud() -> void:
 	v.add_child(resume)
 	var leave := Button.new()
 	leave.text = "Leave Match"
-	leave.pressed.connect(func():
-		Net.leave()
-		get_tree().change_scene_to_file("res://Main.tscn"))
+	leave.pressed.connect(func(): Net.leave_match())
 	v.add_child(leave)
 
 
@@ -647,19 +731,24 @@ func add_feed(text: String) -> void:
 
 func _update_hud() -> void:
 	# Scoreboard
-	var ids := Net.players.keys()
-	ids.sort()
+	# (Plain ASCII only: the web build's font has no star/bullet glyphs.)
+	var r := roster()
+	var ids := r.keys()
+	ids.sort_custom(func(a, b): return [r[a].get("team", 0), a] < [r[b].get("team", 0), b])
 	while scoreboard.get_child_count() < ids.size():
 		scoreboard.add_child(_label(22, 7))
 	while scoreboard.get_child_count() > ids.size():
 		scoreboard.get_child(scoreboard.get_child_count() - 1).free()
+	var need := wins_needed()
 	for i in ids.size():
 		var id = ids[i]
 		var p := get_player(id)
-		var stars := "★".repeat(Net.players[id]["score"]) + "☆".repeat(maxi(0, Net.WIN_SCORE - Net.players[id]["score"]))
+		var score: int = r[id]["score"]
+		var pips := "#".repeat(mini(score, need)) + "-".repeat(maxi(0, need - score))
+		var tag: String = (Net.TEAM_NAMES[r[id].get("team", 0)] + "  ") if is_teams() else ""
 		var l: Label = scoreboard.get_child(i)
-		l.text = "%s %s  %s" % [stars, Net.players[id]["name"], "(splashed)" if p and p.out else ""]
-		l.add_theme_color_override("font_color", Net.players[id]["color"])
+		l.text = "[%s]  %s%s  %s" % [pips, tag, r[id]["name"], "(splashed)" if p and p.out else ""]
+		l.add_theme_color_override("font_color", r[id]["color"])
 	# Local status
 	var lp := local_player()
 	if lp == null:

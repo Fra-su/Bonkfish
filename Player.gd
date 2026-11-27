@@ -36,6 +36,7 @@ var ragdolled := false  # true while stunned: floppy limbs + i-frames
 var charge := 0.0       # 0 = not charging, else seconds held (bonk wind-up)
 
 var fish_id := 0
+var team := 0
 var fish: Dictionary
 var fish_grip := Vector3.ZERO
 var fish_base_scale := 0.16
@@ -76,13 +77,17 @@ var ragdoll: Ragdoll
 
 
 func _ready() -> void:
-	game = get_tree().current_scene
+	# Our room's Game node is two levels up (Room_<code>/Players/<id>). Several rooms can
+	# run side by side on a dedicated server, so never use current_scene here.
+	game = get_parent().get_parent() if get_parent() else null
 	if not (game and game.has_method("report_fall")):
 		game = null
 	var id := get_multiplayer_authority()
-	if Net.players.has(id):
-		display_name = Net.players[id]["name"]
-		color = Net.players[id]["color"]
+	var info: Dictionary = (game.roster() if game else Net.players).get(id, {})
+	display_name = info.get("name", display_name)
+	color = info.get("color", color)
+	team = info.get("team", 0)
+	fish_id = info.get("fish", 0)
 
 	# Visual rig: Body pivot -> human model + a fish held in the right hand.
 	body = Node3D.new()
@@ -109,8 +114,6 @@ func _ready() -> void:
 	hand.position = Vector3(0.16, -0.25, 0.02)  # wrist (fore_l end, A-pose)
 	attach.add_child(hand)
 	# Chosen fish, held by the tail (grip + orientation worked out from the mesh shape).
-	if Net.players.has(id):
-		fish_id = Net.players[id].get("fish", 0)
 	fish = Fish.stats(fish_id)
 	var hold := Fish.hold_info(fish_id, FISH_AIM)
 	fish_grip = hold["grip"]
@@ -162,6 +165,11 @@ func _ready() -> void:
 	sync.name = "Sync"
 	sync.replication_config = cfg
 	sync.set_multiplayer_authority(id)
+	# Only replicate to this room's players (+ the server), not to players in other rooms.
+	if game:
+		sync.public_visibility = false
+		for pid in game.members() + [1]:
+			sync.set_visibility_for(pid, true)
 	add_child(sync)
 
 	camera.current = is_multiplayer_authority()
@@ -346,6 +354,8 @@ func _hit_check(charge_mult := 1.0) -> void:
 	for p in game.get_players():
 		if p == self or p.out or p.is_queued_for_deletion():
 			continue
+		if game.is_teams() and p.team == team:
+			continue  # no friendly fire
 		var to: Vector3 = p.global_position - global_position
 		if absf(to.y) > 2.2:
 			continue
@@ -367,7 +377,7 @@ func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 		fx_time.erase(Powerup.BUBBLE)
 		_recalc_fx()
 		velocity += dir * 3.0
-		_bonk_fx.rpc(true)
+		_room_rpc("_bonk_fx", [true])
 		return
 	var resist := 0.35 if has_fx(Powerup.ANCHOR) else 1.0
 	var mag := BASE_KNOCK * (1.0 + meter) * power * resist
@@ -378,7 +388,16 @@ func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 	last_hitter = attacker
 	last_hit_time = Time.get_ticks_msec() / 1000.0
 	shake = 0.35
-	_bonk_fx.rpc(false)
+	_room_rpc("_bonk_fx", [false])
+
+
+## Run `method` here and on this player's copy for everyone else in the room.
+func _room_rpc(method: String, args := []) -> void:
+	var me := multiplayer.get_unique_id()
+	for pid in (game.members() if game else []):
+		if pid != me:
+			callv("rpc_id", [pid, method] + args)
+	callv(method, args)
 
 
 @rpc("any_peer", "call_local", "reliable")
