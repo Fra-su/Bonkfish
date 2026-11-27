@@ -45,6 +45,7 @@ var meter_label: Label
 var power_label: Label
 var pause_panel: PanelContainer
 var end_btn: Button
+var ping_label: Label
 var tile_mats: Array[StandardMaterial3D] = []
 
 
@@ -189,7 +190,7 @@ func _build_environment() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, 35, 0)
 	sun.light_energy = 1.1
-	sun.shadow_enabled = true
+	sun.shadow_enabled = not OS.has_feature("web")   # shadows are expensive in WebGL
 	add_child(sun)
 
 	var water := MeshInstance3D.new()
@@ -712,6 +713,13 @@ func _build_hud() -> void:
 	feed.alignment = BoxContainer.ALIGNMENT_BEGIN
 	root.add_child(feed)
 
+	ping_label = _label(16, 5)
+	ping_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	ping_label.position = Vector2(-160, -34)
+	ping_label.size = Vector2(140, 24)
+	ping_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	root.add_child(ping_label)
+
 	meter_label = _label(54, 14)
 	meter_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	meter_label.position = Vector2(30, -100)
@@ -831,6 +839,10 @@ func _update_hud() -> void:
 		var l: Label = scoreboard.get_child(i)
 		l.text = "[%s]  %s%s  %s" % [pips, tag, r[id]["name"], "(splashed)" if p and p.out else ""]
 		l.add_theme_color_override("font_color", r[id]["color"])
+	if Net.ping_ms >= 0:
+		ping_label.text = "ping %d ms" % Net.ping_ms
+		ping_label.add_theme_color_override("font_color", Color("b7f5b0") if Net.ping_ms < 120 \
+			else (Color("ffe08a") if Net.ping_ms < 220 else Color("ff8a8a")))
 	# Free cam hint (spectators, and fish that got knocked out)
 	if spec_hint.visible:
 		var who: String = free_cam.following_name()

@@ -83,6 +83,13 @@ var bubble: MeshInstance3D
 var label: Label3D
 var overlay: StandardMaterial3D
 var ragdoll: Ragdoll
+var lite := false        # dedicated server copy: no visuals, just synced state
+
+# --- network smoothing ---
+var net_pos := Vector3.ZERO    # synced: owner's real position (others smooth toward it)
+const SYNC_HZ := 30.0
+const SMOOTH := 14.0           # how quickly remote fish catch up to their real position
+const SNAP_DIST := 5.0         # teleport instead of sliding when this far off (respawns)
 
 
 func _ready() -> void:
@@ -98,81 +105,30 @@ func _ready() -> void:
 	team = info.get("team", 0)
 	fish_id = info.get("fish", 0)
 
-	# Visual rig: Body pivot -> human model + a fish held in the right hand.
-	body = Node3D.new()
-	body.name = "Body"
-	add_child(body)
-	human_model.reparent(body)
-	var src: MeshInstance3D = human_model.get_node("Cube_001")
-	ragdoll = Ragdoll.new()
-	ragdoll.name = "Skeleton"
-	body.add_child(ragdoll)
-	ragdoll.setup(src, human_model.transform * src.transform)
-	overlay = StandardMaterial3D.new()
-	overlay.albedo_color = Color(color, 0.45)
-	overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	ragdoll.skin_mesh.material_overlay = overlay
+	# A dedicated server never draws anything: skip the skeleton, ragdoll, meshes and labels.
+	lite = Net.dedicated
 	collision_layer = 2      # players
 	collision_mask = 1 | 2   # dock + other players (not ragdoll limbs)
-
-	# Fish hand rides the arm bone, so it flops with the ragdoll.
-	var attach := BoneAttachment3D.new()
-	attach.bone_name = "fore_l"
-	ragdoll.add_child(attach)
-	hand = Node3D.new()
-	hand.position = Vector3(0.16, -0.25, 0.02)  # wrist (fore_l end, A-pose)
-	attach.add_child(hand)
-	# Chosen fish, held by the tail (grip + orientation worked out from the mesh shape).
 	fish = Fish.stats(fish_id)
-	var hold := Fish.hold_info(fish_id, FISH_AIM)
-	fish_grip = hold["grip"]
-	fish_base_scale = fish["length"] / hold["len"]
-	hand_fish = MeshInstance3D.new()
-	hand_fish.mesh = hold["mesh"]
-	hand_fish.basis = hold["basis"].scaled(Vector3.ONE * fish_base_scale)
-	_place_fish_grip()
-	hand.add_child(hand_fish)
-	# First-person view model uses the same fish (pack shares Koi's orientation).
-	var fp_mesh: MeshInstance3D = $Head/Camera3D/FishItem/FishMesh
-	fp_mesh.mesh = hold["mesh"]
-	fp_mesh.basis = fp_mesh.basis.scaled(Vector3.ONE * (KOI_LEN / hold["len"]) * (fish["length"] / 0.9))
-
-	bubble = MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = 1.2
-	sm.height = 2.4
-	bubble.mesh = sm
-	var bm := StandardMaterial3D.new()
-	bm.albedo_color = Color(0.55, 0.8, 1.0, 0.28)
-	bm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	bm.rim_enabled = true
-	bm.rim = 1.0
-	bubble.material_override = bm
-	bubble.position.y = 1.0
-	bubble.visible = false
-	add_child(bubble)
-
-	label = Label3D.new()
-	label.position.y = 2.4
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.no_depth_test = true
-	label.font_size = 44
-	label.outline_size = 12
-	label.pixel_size = 0.006
-	label.modulate = color
-	add_child(label)
+	if not lite:
+		_build_visuals()
 
 	# Network sync
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["position", "velocity", "facing", "meter", "fx_mask", "swing_id", "out", "ragdolled", "charge"]:
+	# Movement streams at 30 Hz (not every frame); everything else only when it changes.
+	# Other players' copies glide toward net_pos instead of jumping between updates.
+	for prop in ["net_pos", "velocity", "facing", "meter", "fx_mask", "swing_id", "out", "ragdolled", "charge"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
-		var always: bool = prop == "position" or prop == "velocity"
+		var always: bool = prop in ["net_pos", "velocity", "facing"]
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS if always \
 			else SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	net_pos = position
 	sync = MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	sync.replication_config = cfg
+	sync.replication_interval = 1.0 / SYNC_HZ
+	sync.delta_interval = 1.0 / SYNC_HZ
 	sync.set_multiplayer_authority(id)
 	# Only replicate to this room's players (+ the server), not to players in other rooms.
 	if game:
@@ -181,6 +137,10 @@ func _ready() -> void:
 			sync.set_visibility_for(pid, true)
 	add_child(sync)
 
+	if lite:
+		camera.current = false
+		set_physics_process(false)
+		return
 	camera.current = is_multiplayer_authority()
 	if is_multiplayer_authority():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -298,6 +258,7 @@ func _physics_process(delta: float) -> void:
 
 	move_and_slide()
 	facing = head.rotation.y
+	net_pos = global_position
 
 	# Rogue boat
 	if game and stun <= 0.0 and game.state == "fight":
@@ -452,6 +413,7 @@ func reset_for_round(pos: Vector3) -> void:
 	if not is_multiplayer_authority():
 		return
 	global_position = pos
+	net_pos = pos
 	velocity = Vector3.ZERO
 	meter = 0.0
 	stun = 0.0
@@ -468,6 +430,17 @@ func _process(delta: float) -> void:
 	visible = not out
 	if collision.disabled != out:
 		collision.disabled = out
+
+	# Other players: glide toward their latest synced position (+ a little prediction from
+	# their velocity) instead of jumping 30 times a second.
+	if not is_multiplayer_authority():
+		var target := net_pos + velocity * (0.5 / SYNC_HZ)
+		if lite or global_position.distance_to(target) > SNAP_DIST:
+			global_position = target
+		else:
+			global_position = global_position.lerp(target, minf(1.0, delta * SMOOTH))
+	if lite:
+		return
 
 	var flat_speed := Vector2(velocity.x, velocity.z).length()
 	var airborne := absf(velocity.y) > 0.8 or (is_multiplayer_authority() and not is_on_floor())
@@ -544,3 +517,70 @@ func _update_camera(delta: float) -> void:
 		camera.position = jitter
 	var target_fov := BASE_FOV + FOV_CHANGE * clampf(Vector2(velocity.x, velocity.z).length(), 0.5, SPRINT_SPEED * 2)
 	camera.fov = lerpf(camera.fov, target_fov, delta * 8.0)
+
+
+## Everything you can see: skeleton + skinned human, ragdoll, held fish, bubble, name label.
+func _build_visuals() -> void:
+	# Visual rig: Body pivot -> human model + a fish held in the right hand.
+	body = Node3D.new()
+	body.name = "Body"
+	add_child(body)
+	human_model.reparent(body)
+	var src: MeshInstance3D = human_model.get_node("Cube_001")
+	ragdoll = Ragdoll.new()
+	ragdoll.name = "Skeleton"
+	body.add_child(ragdoll)
+	ragdoll.setup(src, human_model.transform * src.transform)
+	overlay = StandardMaterial3D.new()
+	overlay.albedo_color = Color(color, 0.45)
+	overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ragdoll.skin_mesh.material_overlay = overlay
+	collision_layer = 2      # players
+	collision_mask = 1 | 2   # dock + other players (not ragdoll limbs)
+
+	# Fish hand rides the arm bone, so it flops with the ragdoll.
+	var attach := BoneAttachment3D.new()
+	attach.bone_name = "fore_l"
+	ragdoll.add_child(attach)
+	hand = Node3D.new()
+	hand.position = Vector3(0.16, -0.25, 0.02)  # wrist (fore_l end, A-pose)
+	attach.add_child(hand)
+	# Chosen fish, held by the tail (grip + orientation worked out from the mesh shape).
+	fish = Fish.stats(fish_id)
+	var hold := Fish.hold_info(fish_id, FISH_AIM)
+	fish_grip = hold["grip"]
+	fish_base_scale = fish["length"] / hold["len"]
+	hand_fish = MeshInstance3D.new()
+	hand_fish.mesh = hold["mesh"]
+	hand_fish.basis = hold["basis"].scaled(Vector3.ONE * fish_base_scale)
+	_place_fish_grip()
+	hand.add_child(hand_fish)
+	# First-person view model uses the same fish (pack shares Koi's orientation).
+	var fp_mesh: MeshInstance3D = $Head/Camera3D/FishItem/FishMesh
+	fp_mesh.mesh = hold["mesh"]
+	fp_mesh.basis = fp_mesh.basis.scaled(Vector3.ONE * (KOI_LEN / hold["len"]) * (fish["length"] / 0.9))
+
+	bubble = MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 1.2
+	sm.height = 2.4
+	bubble.mesh = sm
+	var bm := StandardMaterial3D.new()
+	bm.albedo_color = Color(0.55, 0.8, 1.0, 0.28)
+	bm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bm.rim_enabled = true
+	bm.rim = 1.0
+	bubble.material_override = bm
+	bubble.position.y = 1.0
+	bubble.visible = false
+	add_child(bubble)
+
+	label = Label3D.new()
+	label.position.y = 2.4
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true
+	label.font_size = 44
+	label.outline_size = 12
+	label.pixel_size = 0.006
+	label.modulate = color
+	add_child(label)

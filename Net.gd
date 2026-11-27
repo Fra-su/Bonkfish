@@ -77,6 +77,12 @@ func _ready() -> void:
 		print("Bonkfish: starting in dedicated server mode (PORT env = '%s')" % OS.get_environment("PORT"))
 		host_dedicated.call_deferred()
 		return
+	if OS.has_feature("web"):
+		# Browsers run the game on one thread: half the physics rate (measured: the ragdoll
+		# holds together the same at 60 as at 120). And if a slow frame falls behind, don't
+		# catch up with a burst of physics steps - that turns one hitch into a long stutter.
+		Engine.physics_ticks_per_second = 60
+		Engine.max_physics_steps_per_frame = 4
 	_init_steam()
 
 
@@ -130,6 +136,10 @@ func host_dedicated() -> void:
 		get_tree().quit(1)
 		return
 	dedicated = true
+	# A headless server otherwise spins as fast as the CPU allows, starving itself (and costing
+	# Railway usage). It only relays and runs round logic, so 60 fps / 30 physics ticks is plenty.
+	Engine.max_fps = 60
+	Engine.physics_ticks_per_second = 30
 	multiplayer.multiplayer_peer = peer
 	_harden_multiplayer()
 	print("Bonkfish dedicated server listening on ws://0.0.0.0:%d" % port)
@@ -187,7 +197,31 @@ func _ok(id: int, cost := 1.0) -> bool:
 	return peer_names.has(id) and allow(id, cost)
 
 
-func _process(_delta: float) -> void:
+## Round-trip time to the server in ms (-1 = unknown). Shown in the HUD and lobby.
+var ping_ms := -1
+var _ping_timer := 0.0
+
+
+@rpc("any_peer", "unreliable")
+func _s_ping(t: int) -> void:
+	var id := _sender()
+	if peer_names.has(id) and allow(id, 0.3):
+		_to_peer(id, "_c_pong", [t])
+
+
+@rpc("authority", "unreliable")
+func _c_pong(t: int) -> void:
+	ping_ms = Time.get_ticks_msec() - t
+
+
+func _process(delta: float) -> void:
+	if is_online() and not multiplayer.is_server():
+		_ping_timer -= delta
+		if _ping_timer <= 0.0:
+			_ping_timer = 2.0
+			_s_ping.rpc_id(1, Time.get_ticks_msec())
+	elif not is_online():
+		ping_ms = -1
 	if _connected_at.is_empty():
 		return
 	var now := Time.get_ticks_msec() / 1000.0
