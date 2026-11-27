@@ -18,9 +18,11 @@ WORKDIR /game
 COPY . /game
 # Steam is desktop-only; the server never uses it.
 RUN rm -rf /game/addons/godotsteam /game/deploy \
- && godot --headless --path /game --import || true
+ && (timeout 300 godot --headless --path /game --import 2>&1 | tail -n 20; true) \
+ && echo "imported files:" && ls /game/.godot/imported | wc -l
 
 # Railway injects $PORT; Net.gd listens on it (7777 when unset).
 ENV PORT=7777
 EXPOSE 7777
-CMD ["godot", "--headless", "--path", "/game", "--", "--server"]
+# Diagnostics first, then the server with verbose startup logging.
+CMD ["sh", "-c", "echo \"[boot] PORT=$PORT cpus=$(nproc)\"; ls /game/.godot >/dev/null 2>&1 && echo '[boot] import cache present' || echo '[boot] NO import cache'; exec godot --headless --verbose --path /game -- --server"]
