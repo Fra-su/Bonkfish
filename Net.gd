@@ -19,7 +19,7 @@ var pending_status := ""   # shown by the menu after a scene change
 
 # --- Online (WebSocket dedicated server, e.g. on Railway) ---
 ## Default server for "Play Online". Replace with your Railway domain (wss:// = TLS, which Railway provides).
-const DEFAULT_SERVER_URL := "wss://YOUR-APP.up.railway.app"
+const DEFAULT_SERVER_URL := "wss://bonkfish-production.up.railway.app"
 var dedicated := false     # true when this instance is a headless server, not a player
 var _join_counter := 0
 var _online_url := ""
