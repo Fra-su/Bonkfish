@@ -46,6 +46,19 @@ var peer_names := {}             # peer id -> name
 
 var _online_url := ""
 var _retries := 0
+var spectating := false          # client: watching a match in my room instead of playing
+
+# --- server protection (anti-spam / anti-crash) ---
+const MAX_CONNECTIONS := 200      # peers on one server
+const MAX_ROOMS := 100
+const HELLO_TIMEOUT := 10.0       # seconds a new connection gets to introduce itself
+const RATE_PER_SEC := 12.0        # request budget refill per peer
+const RATE_BURST := 30.0
+const STRIKES_TO_KICK := 40       # requests refused for spamming before we disconnect the peer
+var _connected_at := {}           # peer id -> time it connected (until hello)
+var _bucket := {}                 # peer id -> [tokens, last_time]
+var _strikes := {}                # peer id -> refused requests
+var _ctrl_chars := RegEx.create_from_string("[\\x00-\\x1F\\x7F]")
 
 # --- Steam (GodotSteam GDExtension, Spacewar test app 480) ---
 const STEAM_APP_ID := 480
@@ -107,6 +120,10 @@ func host_dedicated() -> void:
 	if port <= 0:
 		port = PORT
 	var peer := WebSocketMultiplayerPeer.new()
+	# Cap what one connection can push at us (oversized/flooded messages get dropped, not buffered).
+	peer.inbound_buffer_size = 64 * 1024
+	peer.max_queued_packets = 512
+	peer.handshake_timeout = 5.0
 	var err := peer.create_server(port)
 	if err != OK:
 		push_error("Bonkfish server: couldn't listen on port %d (error %d)" % [port, err])
@@ -114,7 +131,71 @@ func host_dedicated() -> void:
 		return
 	dedicated = true
 	multiplayer.multiplayer_peer = peer
+	_harden_multiplayer()
 	print("Bonkfish dedicated server listening on ws://0.0.0.0:%d" % port)
+
+
+func _harden_multiplayer() -> void:
+	var sm := multiplayer as SceneMultiplayer
+	if sm:
+		sm.allow_object_decoding = false      # never let clients send us Objects
+		sm.max_sync_packet_size = 1350
+		sm.max_delta_packet_size = 65535
+	if not multiplayer.peer_connected.is_connected(_on_peer_connected):
+		multiplayer.peer_connected.connect(_on_peer_connected)
+
+
+func _on_peer_connected(id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().size() > MAX_CONNECTIONS:
+		print("Refusing peer %d: server full" % id)
+		_drop(id)
+		return
+	_connected_at[id] = Time.get_ticks_msec() / 1000.0
+
+
+func _drop(id: int) -> void:
+	if multiplayer.multiplayer_peer and not (multiplayer.multiplayer_peer is OfflineMultiplayerPeer):
+		multiplayer.multiplayer_peer.disconnect_peer(id)
+
+
+## Rate limit for anything a client asks the server to do. Returns false (and counts a strike)
+## when a peer is spamming; enough strikes and they're disconnected.
+func allow(id: int, cost := 1.0) -> bool:
+	if id == multiplayer.get_unique_id():
+		return true
+	if _strikes.get(id, 0) >= STRIKES_TO_KICK:
+		return false   # already being disconnected: ignore whatever else it still has queued
+	var now := Time.get_ticks_msec() / 1000.0
+	var b: Array = _bucket.get(id, [RATE_BURST, now])
+	b[0] = minf(RATE_BURST, b[0] + (now - b[1]) * RATE_PER_SEC)
+	b[1] = now
+	_bucket[id] = b
+	if b[0] < cost:
+		_strikes[id] = _strikes.get(id, 0) + 1
+		if _strikes[id] >= STRIKES_TO_KICK:
+			print("Disconnecting peer %d for spamming" % id)
+			_drop(id)
+		return false
+	b[0] -= cost
+	return true
+
+
+## A request from a peer that introduced itself and isn't spamming.
+func _ok(id: int, cost := 1.0) -> bool:
+	return peer_names.has(id) and allow(id, cost)
+
+
+func _process(_delta: float) -> void:
+	if _connected_at.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	for id in _connected_at.keys():
+		if now - _connected_at[id] > HELLO_TIMEOUT:
+			_connected_at.erase(id)
+			print("Disconnecting peer %d: never said hello" % id)
+			_drop(id)
 
 
 ## LAN host: ENet server + my own room that others drop into.
@@ -129,6 +210,7 @@ func host_game(pname: String) -> bool:
 
 
 func _host_setup(pname: String) -> void:
+	_harden_multiplayer()
 	my_name = pname
 	rooms.clear()
 	peer_room.clear()
@@ -178,6 +260,7 @@ func leave() -> void:
 	_online_url = ""
 	room = {}
 	players = {}
+	spectating = false
 	chat_log.clear()
 	rooms.clear()
 	peer_room.clear()
@@ -213,6 +296,9 @@ func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
 		_leave(id)
 		peer_names.erase(id)
+		_connected_at.erase(id)
+		_bucket.erase(id)
+		_strikes.erase(id)
 
 
 # =============================================================================
@@ -229,11 +315,19 @@ func choose_team(t: int) -> void:        _to_server("_s_team", [t])
 func kick(id: int) -> void:              _to_server("_s_kick", [id])
 func send_chat(text: String) -> void:    _to_server("_s_chat", [text])
 func request_start() -> void:            _to_server("_s_start")
+func spectate_room(code: String) -> void: _to_server("_s_spectate", [code])
+func request_end_match() -> void:        _to_server("_s_end_match")
 
 
 ## Leave the current match from the pause menu.
 func leave_match() -> void:
-	if multiplayer.is_server():
+	if spectating:
+		spectating = false
+		leave_room()
+		room = {}
+		players = {}
+		get_tree().change_scene_to_file("res://Main.tscn")
+	elif multiplayer.is_server():
 		leave()   # host leaving ends it for everyone
 		get_tree().change_scene_to_file("res://Main.tscn")
 	else:
@@ -266,9 +360,30 @@ func _sender() -> int:
 # Server: rooms
 # =============================================================================
 
+## Strip control characters and clamp length (names/chat/room names come from untrusted clients).
+func _clean_text(s: String, max_len: int) -> String:
+	return _ctrl_chars.sub(s.substr(0, max_len * 2), "", true).strip_edges().substr(0, max_len)
+
+
 func _clean_name(n: String) -> String:
-	n = n.strip_edges().substr(0, 14)
+	n = _clean_text(n, 14)
 	return n if n != "" else "Fish"
+
+
+## Type-safe reads from a client-sent settings Dictionary.
+func _get_int(d: Dictionary, k: String, def: int) -> int:
+	var v = d.get(k, def)
+	return int(v) if typeof(v) in [TYPE_INT, TYPE_FLOAT] else def
+
+
+func _get_bool(d: Dictionary, k: String, def: bool) -> bool:
+	var v = d.get(k, def)
+	return v if typeof(v) == TYPE_BOOL else def
+
+
+func _get_str(d: Dictionary, k: String, def: String) -> String:
+	var v = d.get(k, def)
+	return v if typeof(v) == TYPE_STRING else def
 
 
 func _new_code() -> String:
@@ -283,7 +398,15 @@ func _new_code() -> String:
 
 func _room_info(r: Dictionary) -> Dictionary:
 	return {"code": r["code"], "name": r["name"], "public": r["public"], "max": r["max"],
-		"mode": r["mode"], "wins": r["wins"], "leader": r["leader"], "in_game": r["in_game"]}
+		"mode": r["mode"], "wins": r["wins"], "leader": r["leader"], "in_game": r["in_game"],
+		"spectators": r["spectators"].keys()}
+
+
+## Everyone who should hear about a room: its players and its spectators.
+func watchers(code: String) -> Array:
+	if multiplayer.is_server() and rooms.has(code):
+		return rooms[code]["players"].keys() + rooms[code]["spectators"].keys()
+	return players.keys() + room.get("spectators", [])
 
 
 func _push(code: String) -> void:
@@ -291,13 +414,13 @@ func _push(code: String) -> void:
 		return
 	var r: Dictionary = rooms[code]
 	var info := _room_info(r)
-	for id in r["players"]:
+	for id in watchers(code):
 		_to_peer(id, "_c_room", [info, r["players"]])
 
 
 func _room_say(code: String, line: String) -> void:
 	if rooms.has(code):
-		for id in rooms[code]["players"]:
+		for id in watchers(code):
 			_to_peer(id, "_c_chat", [line])
 
 
@@ -319,17 +442,20 @@ func _smaller_team(r: Dictionary) -> int:
 
 
 func _create(id: int, s: Dictionary) -> void:
+	if rooms.size() >= MAX_ROOMS:
+		_to_peer(id, "_c_error", ["The server has too many rooms open right now. Try joining one!"])
+		return
 	if peer_room.has(id):
 		_leave(id)
 	var code := _new_code()
-	var rname: String = String(s.get("name", "")).strip_edges().substr(0, 24)
+	var rname := _clean_text(_get_str(s, "name", ""), 24)
 	if rname == "":
 		rname = "%s's pond" % peer_names.get(id, "Fish")
-	rooms[code] = {"code": code, "name": rname, "public": bool(s.get("public", true)),
-		"max": clampi(int(s.get("max", MAX_PLAYERS)), 2, MAX_PLAYERS),
-		"mode": clampi(int(s.get("mode", MODE_FFA)), 0, MODES.size() - 1),
-		"wins": clampi(int(s.get("wins", 3)), 1, 9),
-		"leader": id, "in_game": false, "players": {}, "game": null, "joined": 0}
+	rooms[code] = {"code": code, "name": rname, "public": _get_bool(s, "public", true),
+		"max": clampi(_get_int(s, "max", MAX_PLAYERS), 2, MAX_PLAYERS),
+		"mode": clampi(_get_int(s, "mode", MODE_FFA), 0, MODES.size() - 1),
+		"wins": clampi(_get_int(s, "wins", 3), 0, 9),   # 0 = endless
+		"leader": id, "in_game": false, "players": {}, "spectators": {}, "game": null, "joined": 0}
 	print("Room %s created (%s)" % [code, "public" if rooms[code]["public"] else "private"])
 	_join(id, code)
 
@@ -339,10 +465,10 @@ func _join(id: int, code: String) -> void:
 		_to_peer(id, "_c_error", ["No room with code %s." % code])
 		return
 	var r: Dictionary = rooms[code]
-	if peer_room.get(id, "") == code:
+	if r["players"].has(id):
 		return
 	if r["in_game"]:
-		_to_peer(id, "_c_error", ["That match is in progress - try again in a bit."])
+		_to_peer(id, "_c_error", ["That match is in progress - you can spectate it instead."])
 		return
 	if r["players"].size() >= r["max"]:
 		_to_peer(id, "_c_error", ["That room is full."])
@@ -358,6 +484,26 @@ func _join(id: int, code: String) -> void:
 	_room_say(code, "%s joined the dock" % peer_names.get(id, "Fish"))
 
 
+func _spectate(id: int, code: String) -> void:
+	if not rooms.has(code):
+		_to_peer(id, "_c_error", ["No room with code %s." % code])
+		return
+	var r: Dictionary = rooms[code]
+	if not r["in_game"] or r["game"] == null:
+		_to_peer(id, "_c_error", ["There's no match to watch in that room right now."])
+		return
+	if r["spectators"].size() >= 16:
+		_to_peer(id, "_c_error", ["Too many spectators in that room."])
+		return
+	if peer_room.has(id):
+		_leave(id)
+	r["spectators"][id] = peer_names.get(id, "Fish")
+	peer_room[id] = code
+	_push(code)
+	_room_say(code, "%s is watching" % peer_names.get(id, "Fish"))
+	_to_peer(id, "_c_spectate", [code])
+
+
 func _leave(id: int) -> void:
 	if not peer_room.has(id):
 		return
@@ -366,10 +512,17 @@ func _leave(id: int) -> void:
 	if not rooms.has(code):
 		return
 	var r: Dictionary = rooms[code]
+	if r["spectators"].has(id):
+		r["spectators"].erase(id)
+		_push(code)
+		return
 	var pname: String = r["players"].get(id, {}).get("name", "Someone")
 	r["players"].erase(id)
 	player_left.emit(code, id)  # the room's Game node on the server reacts
 	if r["players"].is_empty():
+		for sid in r["spectators"].keys():   # nobody left to watch
+			peer_room.erase(sid)
+			_to_peer(sid, "_c_go_browser", ["That match ended."])
 		if r["game"] and is_instance_valid(r["game"]) and r["game"] != get_tree().current_scene:
 			r["game"].queue_free()
 		rooms.erase(code)
@@ -388,12 +541,16 @@ func _leave(id: int) -> void:
 
 func _member_room(id: int) -> Dictionary:
 	var code: String = peer_room.get(id, "")
-	return rooms.get(code, {})
+	var r: Dictionary = rooms.get(code, {})
+	return r if not r.is_empty() and r["players"].has(id) else {}
 
 
 @rpc("any_peer", "reliable")
 func _s_hello(pname: String) -> void:
 	var id := _sender()
+	if peer_names.has(id) or not allow(id):
+		return
+	_connected_at.erase(id)
 	peer_names[id] = _clean_name(pname)
 	if not dedicated and not rooms.is_empty():
 		_join(id, rooms.keys()[0])   # LAN/Steam: straight into the host's room
@@ -403,27 +560,46 @@ func _s_hello(pname: String) -> void:
 
 @rpc("any_peer", "reliable")
 func _s_list() -> void:
+	var id := _sender()
+	if not _ok(id, 2.0):
+		return
 	var list := []
 	for r in rooms.values():
 		if r["public"]:
 			list.append({"code": r["code"], "name": r["name"], "count": r["players"].size(),
-				"max": r["max"], "mode": r["mode"], "wins": r["wins"], "in_game": r["in_game"]})
-	_to_peer(_sender(), "_c_list", [list])
+				"max": r["max"], "mode": r["mode"], "wins": r["wins"], "in_game": r["in_game"],
+				"watching": r["spectators"].size()})
+		if list.size() >= 60:
+			break
+	_to_peer(id, "_c_list", [list])
 
 
 @rpc("any_peer", "reliable")
 func _s_create(s: Dictionary) -> void:
-	_create(_sender(), s)
+	var id := _sender()
+	if _ok(id, 8.0) and s.size() <= 10:
+		_create(id, s)
 
 
 @rpc("any_peer", "reliable")
 func _s_join(code: String) -> void:
-	_join(_sender(), code)
+	var id := _sender()
+	if _ok(id, 2.0):
+		_join(id, _clean_text(code, 4).to_upper())
+
+
+@rpc("any_peer", "reliable")
+func _s_spectate(code: String) -> void:
+	var id := _sender()
+	if _ok(id, 2.0):
+		_spectate(id, _clean_text(code, 4).to_upper())
 
 
 @rpc("any_peer", "reliable")
 func _s_leave() -> void:
 	var id := _sender()
+	if not _ok(id):
+		return
 	_leave(id)
 	_to_peer(id, "_c_room", [{}, {}])
 
@@ -431,21 +607,23 @@ func _s_leave() -> void:
 @rpc("any_peer", "reliable")
 func _s_settings(s: Dictionary) -> void:
 	var id := _sender()
+	if not _ok(id) or s.size() > 10:
+		return
 	var r := _member_room(id)
 	if r.is_empty() or r["leader"] != id or r["in_game"]:
 		return
 	if s.has("name"):
-		var n := String(s["name"]).strip_edges().substr(0, 24)
+		var n := _clean_text(_get_str(s, "name", ""), 24)
 		if n != "":
 			r["name"] = n
 	if s.has("public"):
-		r["public"] = bool(s["public"])
+		r["public"] = _get_bool(s, "public", r["public"])
 	if s.has("max"):
-		r["max"] = clampi(int(s["max"]), maxi(2, r["players"].size()), MAX_PLAYERS)
+		r["max"] = clampi(_get_int(s, "max", r["max"]), maxi(2, r["players"].size()), MAX_PLAYERS)
 	if s.has("wins"):
-		r["wins"] = clampi(int(s["wins"]), 1, 9)
+		r["wins"] = clampi(_get_int(s, "wins", r["wins"]), 0, 9)
 	if s.has("mode"):
-		var m := clampi(int(s["mode"]), 0, MODES.size() - 1)
+		var m := clampi(_get_int(s, "mode", r["mode"]), 0, MODES.size() - 1)
 		if m != r["mode"]:
 			r["mode"] = m
 			if m == MODE_TEAMS:  # rebalance in join order
@@ -460,6 +638,8 @@ func _s_settings(s: Dictionary) -> void:
 @rpc("any_peer", "reliable")
 func _s_fish(i: int) -> void:
 	var id := _sender()
+	if not _ok(id):
+		return
 	var r := _member_room(id)
 	if r.is_empty() or r["in_game"]:
 		return
@@ -470,6 +650,8 @@ func _s_fish(i: int) -> void:
 @rpc("any_peer", "reliable")
 func _s_team(t: int) -> void:
 	var id := _sender()
+	if not _ok(id):
+		return
 	var r := _member_room(id)
 	if r.is_empty() or r["in_game"] or r["mode"] != MODE_TEAMS:
 		return
@@ -481,6 +663,8 @@ func _s_team(t: int) -> void:
 @rpc("any_peer", "reliable")
 func _s_kick(target: int) -> void:
 	var id := _sender()
+	if not _ok(id):
+		return
 	var r := _member_room(id)
 	if r.is_empty() or r["leader"] != id or target == id or not r["players"].has(target):
 		return
@@ -491,16 +675,21 @@ func _s_kick(target: int) -> void:
 @rpc("any_peer", "reliable")
 func _s_chat(text: String) -> void:
 	var id := _sender()
-	var r := _member_room(id)
-	text = text.strip_edges().substr(0, 120)
-	if r.is_empty() or text == "":
+	if not _ok(id, 4.0):   # ~3 messages/second sustained
 		return
-	_room_say(r["code"], "%s: %s" % [r["players"][id]["name"], text])
+	var code: String = peer_room.get(id, "")
+	text = _clean_text(text, 120)
+	if not rooms.has(code) or text == "":
+		return
+	var watching: bool = rooms[code]["spectators"].has(id)
+	_room_say(code, "%s%s: %s" % [peer_names.get(id, "Fish"), " (watching)" if watching else "", text])
 
 
 @rpc("any_peer", "reliable")
 func _s_start() -> void:
 	var id := _sender()
+	if not _ok(id, 4.0):
+		return
 	var r := _member_room(id)
 	if r.is_empty() or r["leader"] != id or r["in_game"]:
 		return
@@ -517,6 +706,17 @@ func _s_start() -> void:
 		r["game"] = g
 	for pid in r["players"]:
 		_to_peer(pid, "_c_go_game", [code])
+
+
+## Leader stops the match (e.g. an endless one) and takes everyone back to the room lobby.
+@rpc("any_peer", "reliable")
+func _s_end_match() -> void:
+	var id := _sender()
+	if not _ok(id, 2.0):
+		return
+	var r := _member_room(id)
+	if not r.is_empty() and r["leader"] == id and r["in_game"]:
+		end_match(r["code"])
 
 
 func _make_game(code: String) -> Node:
@@ -543,6 +743,10 @@ func end_match(code: String) -> void:
 	var r: Dictionary = rooms[code]
 	r["in_game"] = false
 	_set_lobby_joinable(true)
+	for sid in r["spectators"].keys():   # spectators go back to the room browser
+		peer_room.erase(sid)
+		_to_peer(sid, "_c_go_browser", ["The match you were watching ended."])
+	r["spectators"].clear()
 	_push(code)
 	for pid in r["players"]:
 		_to_peer(pid, "_c_go_lobby")
@@ -562,6 +766,10 @@ func room_view(code: String) -> Dictionary:
 	if multiplayer.is_server() and rooms.has(code):
 		return rooms[code]
 	return room
+
+
+func is_spectator_of(code: String, id: int) -> bool:
+	return rooms.has(code) and rooms[code]["spectators"].has(id)
 
 
 # =============================================================================
@@ -623,6 +831,23 @@ func _c_go_game(code: String) -> void:
 	get_tree().change_scene_to_node(g)
 	if multiplayer.is_server() and rooms.has(code):
 		rooms[code]["game"] = g
+
+
+@rpc("authority", "reliable")
+func _c_spectate(code: String) -> void:
+	spectating = true
+	var g := _make_game(code)
+	g.spectator = true
+	get_tree().change_scene_to_node(g)
+
+
+@rpc("authority", "reliable")
+func _c_go_browser(msg: String) -> void:
+	spectating = false
+	room = {}
+	players = {}
+	pending_status = msg
+	get_tree().change_scene_to_file("res://Main.tscn")
 
 
 @rpc("authority", "reliable")

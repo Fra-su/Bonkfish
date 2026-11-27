@@ -37,6 +37,15 @@ var charge := 0.0       # 0 = not charging, else seconds held (bonk wind-up)
 
 var fish_id := 0
 var team := 0
+var sync: MultiplayerSynchronizer
+var _last_bonk_from := {}            # attacker id -> time (anti-spam)
+const MAX_BONK_POWER := 16.0         # biggest legit power (mega x mega-bonks x heavy fish x charge x run)
+
+
+## A spectator joined the room: start replicating this fish to them.
+func add_watcher(id: int) -> void:
+	if sync:
+		sync.set_visibility_for(id, true)
 var fish: Dictionary
 var fish_grip := Vector3.ZERO
 var fish_base_scale := 0.16
@@ -161,14 +170,14 @@ func _ready() -> void:
 		var always: bool = prop == "position" or prop == "velocity"
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS if always \
 			else SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
-	var sync := MultiplayerSynchronizer.new()
+	sync = MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	sync.replication_config = cfg
 	sync.set_multiplayer_authority(id)
 	# Only replicate to this room's players (+ the server), not to players in other rooms.
 	if game:
 		sync.public_visibility = false
-		for pid in game.members() + [1]:
+		for pid in Net.watchers(game.room_code) + [1]:
 			sync.set_visibility_for(pid, true)
 	add_child(sync)
 
@@ -373,6 +382,19 @@ func _hit_check(charge_mult := 1.0) -> void:
 func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 	if not is_multiplayer_authority() or out or stun > 0.0:
 		return  # i-frames while ragdolled
+	# Don't trust the sender: must be a fish in this room, reasonable numbers, not spamming.
+	var from := multiplayer.get_remote_sender_id()
+	if from != 0:
+		if game == null or not game.members().has(from) or from != attacker:
+			return
+		var now := Time.get_ticks_msec() / 1000.0
+		if now - _last_bonk_from.get(from, -10.0) < 0.2:
+			return
+		_last_bonk_from[from] = now
+	if not (is_finite(dir.x) and is_finite(dir.y) and is_finite(dir.z) and is_finite(power)):
+		return
+	dir = Vector3(dir.x, 0, dir.z).normalized() if Vector2(dir.x, dir.z).length() > 0.01 else Vector3.FORWARD
+	power = clampf(power, 0.0, MAX_BONK_POWER)
 	if has_fx(Powerup.BUBBLE):
 		fx_time.erase(Powerup.BUBBLE)
 		_recalc_fx()
@@ -394,7 +416,7 @@ func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 ## Run `method` here and on this player's copy for everyone else in the room.
 func _room_rpc(method: String, args := []) -> void:
 	var me := multiplayer.get_unique_id()
-	for pid in (game.members() if game else []):
+	for pid in (Net.watchers(game.room_code) if game else []):
 		if pid != me:
 			callv("rpc_id", [pid, method] + args)
 	callv(method, args)
@@ -402,6 +424,9 @@ func _room_rpc(method: String, args := []) -> void:
 
 @rpc("any_peer", "call_local", "reliable")
 func _bonk_fx(blocked: bool) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from != 0 and from != get_multiplayer_authority():
+		return
 	flash = 0.25
 	if game:
 		game.burst(global_position + Vector3(0, 1.2, 0), Color("bde0fe") if blocked else Color.WHITE, 18)

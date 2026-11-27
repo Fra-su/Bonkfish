@@ -44,10 +44,15 @@ var feed: VBoxContainer
 var meter_label: Label
 var power_label: Label
 var pause_panel: PanelContainer
+var end_btn: Button
 var tile_mats: Array[StandardMaterial3D] = []
 
 
 var room_code := ""   # set by Net before this node enters the tree (node name is "Room_<code>")
+var spectator := false   # client is only watching this match
+var dropped: Array[int] = []   # server: tiles dropped this round (for late spectators)
+var free_cam: Camera3D
+var spec_hint: Label
 
 
 ## This room's players: {id: {name, color, score, fish, team}}.
@@ -68,15 +73,16 @@ func is_teams() -> bool:
 	return settings().get("mode", Net.MODE_FFA) == Net.MODE_TEAMS
 
 
+## Wins needed to take the match; 0 = endless (rounds go on until the leader ends it).
 func wins_needed() -> int:
 	return settings().get("wins", 3)
 
 
-## Server -> everyone in this room: run `method` here and on every member's copy of this node.
-## (A plain .rpc() would reach players in other rooms too.)
+## Server -> everyone in this room (players + spectators): run `method` here and on their copy
+## of this node. (A plain .rpc() would reach players in other rooms too.)
 func bc(method: String, args := []) -> void:
 	var me := multiplayer.get_unique_id()
-	for id in members():
+	for id in Net.watchers(room_code):
 		if id != me:
 			callv("rpc_id", [id, method] + args)
 	callv(method, args)
@@ -94,11 +100,68 @@ func _ready() -> void:
 		_spawn_player(id)
 	Net.player_left.connect(_on_net_player_left)
 	_build_tiles(10.5)
-	if multiplayer.is_server():
+	free_cam = preload("res://SpecCam.gd").new()
+	free_cam.game = self
+	add_child(free_cam)
+	if spectator:
+		enter_free_cam()
+		_watcher_ready.rpc_id(1)
+	elif multiplayer.is_server():
 		if multiplayer.get_unique_id() in ids:
 			_peer_ready()
 	else:
 		_peer_ready.rpc_id(1)
+
+
+func enter_free_cam() -> void:
+	free_cam.global_position = spectator_cam.global_position
+	free_cam.activate()
+	spec_hint.visible = true
+
+
+# --- spectators ------------------------------------------------------------------
+
+## A spectator's Game node is ready: send them the current state, and tell the room's
+## players to start syncing their fish to them.
+@rpc("any_peer", "reliable")
+func _watcher_ready() -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not multiplayer.is_server() or not Net.is_spectator_of(room_code, id) or not Net.allow(id, 2.0):
+		return
+	var pus := []
+	for pid in powerups:
+		pus.append([pid, powerups[pid].type, powerups[pid].position])
+	_snapshot.rpc_id(id, modifier, state, round_num, dropped, pus)
+	bc("_add_watcher", [id])
+
+
+@rpc("authority", "reliable")
+func _snapshot(m: int, st: String, rn: int, drop: Array, pus: Array) -> void:
+	_apply_modifier(m)
+	_build_tiles(6.5 if m == TINY else 10.5)
+	for i in drop:
+		if i >= 0 and i < tiles.size():
+			tiles[i].set_meta("dropping", true)
+			(tiles[i].get_meta("cs") as CollisionShape3D).disabled = true
+			tiles[i].visible = false
+	for p in pus:
+		_spawn_powerup(p[0], p[1], p[2])
+	state = st
+	round_num = rn
+	show_banner("SPECTATING", "%s  -  round %d" % [settings().get("name", ""), rn], 2.5)
+
+
+@rpc("authority", "call_local", "reliable")
+func _add_watcher(id: int) -> void:
+	for p in get_players():
+		p.add_watcher(id)
+
+
+func _apply_modifier(m: int) -> void:
+	modifier = m
+	gravity_mult = 0.45 if m == MOON else 1.0
+	friction = 0.12 if m == ICE else 1.0
+	knock_mult = 1.5 if m == MEGA_BONKS else 1.0
 
 
 # --- world -------------------------------------------------------------------
@@ -174,6 +237,7 @@ func _build_tiles(radius: float) -> void:
 	for t in tiles:
 		t.queue_free()
 	tiles.clear()
+	dropped.clear()
 	var n := 4
 	for x in range(-n, n + 1):
 		for z in range(-n, n + 1):
@@ -258,7 +322,7 @@ func _on_player_left(id: int) -> void:
 
 
 func on_local_out() -> void:
-	spectator_cam.current = true
+	enter_free_cam()
 
 
 # --- round flow (server) -------------------------------------------------------
@@ -266,6 +330,9 @@ func on_local_out() -> void:
 @rpc("any_peer", "call_local", "reliable")
 func _peer_ready() -> void:
 	if not multiplayer.is_server():
+		return
+	var sid := multiplayer.get_remote_sender_id()
+	if sid != 0 and (not members().has(sid) or not Net.allow(sid, 2.0)):
 		return
 	ready_peers[multiplayer.get_remote_sender_id() if multiplayer.get_remote_sender_id() != 0 else 1] = true
 	# Only count this room's players (a dedicated server is peer 1 but not a player).
@@ -282,10 +349,7 @@ func _server_start_round() -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _begin_round(m: int) -> void:
-	modifier = m
-	gravity_mult = 0.45 if m == MOON else 1.0
-	friction = 0.12 if m == ICE else 1.0
-	knock_mult = 1.5 if m == MEGA_BONKS else 1.0
+	_apply_modifier(m)
 	for pid in powerups.keys():
 		powerups[pid].queue_free()
 	powerups.clear()
@@ -303,6 +367,7 @@ func _begin_round(m: int) -> void:
 	var lp := local_player()
 	if lp:
 		lp.camera.current = true
+		spec_hint.visible = false
 	_countdown()
 
 
@@ -370,6 +435,8 @@ func _drop_tile(i: int) -> void:
 	if t.has_meta("dropping"):
 		return
 	t.set_meta("dropping", true)
+	if multiplayer.is_server():
+		dropped.append(i)
 	var mi: MeshInstance3D = t.get_meta("mesh")
 	mi.material_override = tile_mats[2]
 	var tw := create_tween()
@@ -453,7 +520,7 @@ func request_pickup(pid: int) -> void:
 	if not multiplayer.is_server() or not powerups.has(pid):
 		return
 	var who := multiplayer.get_remote_sender_id()
-	if who != 0 and not members().has(who):
+	if who != 0 and (not members().has(who) or not Net.allow(who)):
 		return
 	bc("_powerup_taken", [pid, who if who != 0 else 1])
 
@@ -479,7 +546,7 @@ func report_fall(hitter: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if id == 0:
 		id = 1
-	if state != "fight" or not alive.has(id):
+	if state != "fight" or not alive.has(id) or not Net.allow(id):
 		return
 	alive.erase(id)
 	bc("_player_out", [id, hitter])
@@ -531,7 +598,8 @@ func _check_end() -> void:
 	var match_done := false
 	if not scorers.is_empty() and started_with > 1:
 		Net.add_score(room_code, scorers)
-		match_done = scorers.any(func(id): return roster().has(id) and roster()[id]["score"] >= wins_needed())
+		var need := wins_needed()   # 0 = endless: never ends on score
+		match_done = need > 0 and scorers.any(func(id): return roster().has(id) and roster()[id]["score"] >= need)
 	bc("_round_over", [winner, team])
 	await get_tree().create_timer(4.0).timeout
 	if not is_inside_tree():
@@ -660,7 +728,16 @@ func _build_hud() -> void:
 	dot.text = "+"
 	dot.set_anchors_preset(Control.PRESET_CENTER)
 	dot.position = Vector2(-8, -20)
+	dot.visible = not spectator
 	root.add_child(dot)
+
+	spec_hint = _label(18, 6)
+	spec_hint.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	spec_hint.position = Vector2(-600, -40)
+	spec_hint.size = Vector2(1200, 30)
+	spec_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	spec_hint.visible = false
+	root.add_child(spec_hint)
 
 	pause_panel = PanelContainer.new()
 	pause_panel.set_anchors_preset(Control.PRESET_CENTER)
@@ -680,8 +757,12 @@ func _build_hud() -> void:
 	resume.text = "Resume"
 	resume.pressed.connect(_toggle_pause)
 	v.add_child(resume)
+	end_btn = Button.new()
+	end_btn.text = "End Match (back to room)"
+	end_btn.pressed.connect(func(): Net.request_end_match(); _toggle_pause())
+	v.add_child(end_btn)
 	var leave := Button.new()
-	leave.text = "Leave Match"
+	leave.text = "Stop Watching" if spectator else "Leave Match"
 	leave.pressed.connect(func(): Net.leave_match())
 	v.add_child(leave)
 
@@ -696,6 +777,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _toggle_pause() -> void:
 	pause_panel.visible = not pause_panel.visible
+	end_btn.visible = Net.am_leader() and not spectator
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if pause_panel.visible else Input.MOUSE_MODE_CAPTURED
 
 
@@ -744,13 +826,20 @@ func _update_hud() -> void:
 		var id = ids[i]
 		var p := get_player(id)
 		var score: int = r[id]["score"]
-		var pips := "#".repeat(mini(score, need)) + "-".repeat(maxi(0, need - score))
+		var pips := ("W %d" % score) if need == 0 else "#".repeat(mini(score, need)) + "-".repeat(maxi(0, need - score))
 		var tag: String = (Net.TEAM_NAMES[r[id].get("team", 0)] + "  ") if is_teams() else ""
 		var l: Label = scoreboard.get_child(i)
 		l.text = "[%s]  %s%s  %s" % [pips, tag, r[id]["name"], "(splashed)" if p and p.out else ""]
 		l.add_theme_color_override("font_color", r[id]["color"])
+	# Free cam hint (spectators, and fish that got knocked out)
+	if spec_hint.visible:
+		var who: String = free_cam.following_name()
+		spec_hint.text = ("Following %s  |  Tab: next fish  |  F: free cam  |  Wheel: zoom" % who) if who != "" \
+			else "%sFREE CAM  |  WASD + mouse  |  Space/Ctrl: up/down  |  Shift: fast  |  Tab: follow a fish  |  Esc: menu" \
+			% ("SPECTATING  |  " if spectator else "")
 	# Local status
 	var lp := local_player()
+	meter_label.visible = lp != null and not lp.out
 	if lp == null:
 		return
 	var pct := int(lp.meter * 100)

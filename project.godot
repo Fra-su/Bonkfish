@@ -18,6 +18,7 @@ run/flush_stdout_on_print=true
 [autoload]
 
 Net="*res://Net.gd"
+TabGuard="*res://TabGuard.gd"
 
 [display]
 

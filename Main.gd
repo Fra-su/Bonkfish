@@ -22,6 +22,7 @@ var new_public: CheckBox
 var new_max: SpinBox
 var new_mode: OptionButton
 var new_wins: SpinBox
+var new_endless: CheckBox
 var refresh_timer := 0.0
 
 # --- lobby (in a room) ---
@@ -35,6 +36,7 @@ var set_public: CheckBox
 var set_max: SpinBox
 var set_mode: OptionButton
 var set_wins: SpinBox
+var set_endless: CheckBox
 var fish_label: Label
 var fish_stats: Label
 var chat_text: Label
@@ -223,6 +225,11 @@ func _build_browser(col: VBoxContainer) -> void:
 	new_wins = _spin(1, 9, 3)
 	g.add_child(_small("Wins to take it"))
 	g.add_child(new_wins)
+	new_endless = CheckBox.new()
+	new_endless.text = "Endless (no winner, play forever)"
+	new_endless.toggled.connect(func(on): new_wins.editable = not on)
+	g.add_child(_small(""))
+	g.add_child(new_endless)
 	right.add_child(_button("Create Room", _create_room))
 
 	v.add_child(HSeparator.new())
@@ -285,6 +292,11 @@ func _build_lobby(col: VBoxContainer) -> void:
 	set_wins.value_changed.connect(func(x): Net.set_room_settings({"wins": int(x)}))
 	settings_box.add_child(_small("Wins to take it"))
 	settings_box.add_child(set_wins)
+	set_endless = CheckBox.new()
+	set_endless.text = "Endless (no winner)"
+	set_endless.toggled.connect(func(on): Net.set_room_settings({"wins": 0 if on else maxi(1, int(set_wins.value))}))
+	settings_box.add_child(_small(""))
+	settings_box.add_child(set_endless)
 
 	# Right: fish + chat
 	var right := VBoxContainer.new()
@@ -445,7 +457,8 @@ func _join_code() -> void:
 
 func _create_room() -> void:
 	Net.create_room({"name": new_name.text, "public": new_public.button_pressed,
-		"max": int(new_max.value), "mode": new_mode.selected, "wins": int(new_wins.value)})
+		"max": int(new_max.value), "mode": new_mode.selected,
+		"wins": 0 if new_endless.button_pressed else int(new_wins.value)})
 
 
 func _leave_room() -> void:
@@ -468,6 +481,10 @@ func _my_fish() -> int:
 
 func _cycle_fish(d: int) -> void:
 	Net.choose_fish(_my_fish() + d)
+
+
+func _wins_text(w: int) -> String:
+	return "endless" if w == 0 else "first to %d" % w
 
 
 func _bar(v: float) -> String:
@@ -512,13 +529,17 @@ func _show_rooms(list: Array) -> void:
 		nm.add_theme_font_size_override("font_size", 19)
 		nm.clip_text = true
 		info.add_child(nm)
-		info.add_child(_small("%d/%d  |  %s  |  first to %d%s" % [r["count"], r["max"], Net.MODES[r["mode"]],
-			r["wins"], "  |  IN MATCH" if r["in_game"] else ""]))
+		info.add_child(_small("%d/%d  |  %s  |  %s%s%s" % [r["count"], r["max"], Net.MODES[r["mode"]],
+			_wins_text(r["wins"]), "  |  IN MATCH" if r["in_game"] else "",
+			("  |  %d watching" % r.get("watching", 0)) if r.get("watching", 0) > 0 else ""]))
 		h.add_child(_expand(info))
-		var full: bool = r["count"] >= r["max"]
-		var b := _button("Full" if full else ("Playing" if r["in_game"] else "Join"), func(): Net.join_room(r["code"]))
-		b.disabled = full or r["in_game"]
-		h.add_child(b)
+		if r["in_game"]:
+			h.add_child(_button("Spectate", func(): Net.spectate_room(r["code"])))
+		else:
+			var full: bool = r["count"] >= r["max"]
+			var b := _button("Full" if full else "Join", func(): Net.join_room(r["code"]))
+			b.disabled = full
+			h.add_child(b)
 		room_rows.add_child(row)
 
 
@@ -537,9 +558,9 @@ func _refresh_lobby() -> void:
 	var leader := Net.am_leader()
 	var teams := Net.is_teams()
 	room_title.text = r["name"]
-	room_info.text = "Code: %s   |   %s   |   %d/%d players   |   %s   |   first to %d" % [
+	room_info.text = "Code: %s   |   %s   |   %d/%d players   |   %s   |   %s" % [
 		r["code"], "Public" if r["public"] else "Private (share the code)", Net.players.size(), r["max"],
-		Net.MODES[r["mode"]], r["wins"]]
+		Net.MODES[r["mode"]], _wins_text(r["wins"])]
 
 	# Players
 	for c in player_list.get_children():
@@ -576,7 +597,10 @@ func _refresh_lobby() -> void:
 	set_public.set_pressed_no_signal(r["public"])
 	set_max.set_value_no_signal(r["max"])
 	set_mode.select(r["mode"])
-	set_wins.set_value_no_signal(r["wins"])
+	set_endless.set_pressed_no_signal(r["wins"] == 0)
+	set_wins.editable = r["wins"] != 0
+	if r["wins"] > 0:
+		set_wins.set_value_no_signal(r["wins"])
 
 	# Fish
 	var fs := Fish.stats(_my_fish())
