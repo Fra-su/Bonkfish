@@ -37,6 +37,7 @@ var charge := 0.0       # 0 = not charging, else seconds held (bonk wind-up)
 
 var fish_id := 0
 var team := 0
+var level := 0           # account level (0 = guest / no accounts)
 var sync: MultiplayerSynchronizer
 var _last_bonk_from := {}            # attacker id -> time (anti-spam)
 const MAX_BONK_POWER := 16.0         # biggest legit power (mega x mega-bonks x heavy fish x charge x run)
@@ -150,6 +151,7 @@ func _ready() -> void:
 	color = info.get("color", color)
 	team = info.get("team", 0)
 	fish_id = info.get("fish", 0)
+	level = info.get("level", 0)
 
 	# A dedicated server never draws anything: skip the skeleton, ragdoll, meshes and labels.
 	lite = Net.dedicated
@@ -550,7 +552,7 @@ func _process(delta: float) -> void:
 	for k in Powerup.INFO.size():
 		if has_fx(k):
 			tags += "[" + Powerup.INFO[k]["letter"] + "]"
-	label.text = "%s %s\n%d%%" % [display_name, tags, int(meter * 100)]
+	label.text = "%s%s %s\n%d%%" % [("Lv %d  " % level) if level > 0 else "", display_name, tags, int(meter * 100)]
 
 	if is_multiplayer_authority():
 		_update_camera(delta)

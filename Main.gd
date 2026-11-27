@@ -5,6 +5,16 @@ extends Control
 
 const SETTINGS := "user://settings.cfg"
 const Fish := preload("res://Fish.gd")
+const Accounts := preload("res://Accounts.gd")
+
+# --- account (official server) ---
+var account_box: VBoxContainer
+var account_label: Label
+var login_row: HBoxContainer
+var user_edit: LineEdit
+var pass_edit: LineEdit
+var logout_btn: Button
+var fish_preview := -1
 
 # --- menu (not connected) ---
 var menu_panel: PanelContainer
@@ -62,11 +72,13 @@ func _ready() -> void:
 	Net.status.connect(func(m): status_label.text = m)
 	Net.room_list.connect(_show_rooms)
 	Net.chat_line.connect(func(_l): _show_chat())
+	Net.account_changed.connect(func(): _refresh_account(); _refresh())
 	if Net.steam_ok:
 		Net.lobbies_found.connect(_show_steam_lobbies)
 	if Net.pending_status != "":
 		status_label.text = Net.pending_status
 		Net.pending_status = ""
+	_refresh_account()
 	_refresh()
 	if Net.is_online() and not Net.in_room():
 		Net.refresh_rooms()
@@ -145,6 +157,8 @@ func _build_browser(col: VBoxContainer) -> void:
 	v.add_theme_constant_override("separation", 10)
 	browser_panel.add_child(v)
 	v.add_child(_heading("Rooms"))
+	_build_account(v)
+	v.add_child(HSeparator.new())
 	var cols := HBoxContainer.new()
 	cols.add_theme_constant_override("separation", 22)
 	v.add_child(cols)
@@ -491,8 +505,66 @@ func _my_fish() -> int:
 	return Net.players.get(Net.my_id(), {}).get("fish", 0)
 
 
+## Browse all fish; only locked ones stay a preview (the server would refuse them anyway).
 func _cycle_fish(d: int) -> void:
-	Net.choose_fish(_my_fish() + d)
+	var n := Fish.LINEUP.size()
+	fish_preview = posmod((fish_preview if fish_preview >= 0 else _my_fish()) + d, n)
+	if Accounts.fish_unlocked(fish_preview, Net.my_level()):
+		Net.choose_fish(fish_preview)
+	_refresh_lobby()
+
+
+func _build_account(v: VBoxContainer) -> void:
+	account_box = VBoxContainer.new()
+	account_box.add_theme_constant_override("separation", 6)
+	v.add_child(account_box)
+	account_label = _small("")
+	account_box.add_child(account_label)
+	login_row = HBoxContainer.new()
+	login_row.add_theme_constant_override("separation", 8)
+	user_edit = LineEdit.new()
+	user_edit.placeholder_text = "Username"
+	user_edit.max_length = 14
+	user_edit.custom_minimum_size.x = 150
+	pass_edit = LineEdit.new()
+	pass_edit.placeholder_text = "Password"
+	pass_edit.secret = true
+	pass_edit.max_length = 64
+	pass_edit.custom_minimum_size.x = 150
+	pass_edit.text_submitted.connect(func(_s): _do_login())
+	login_row.add_child(user_edit)
+	login_row.add_child(pass_edit)
+	login_row.add_child(_button("Log in", _do_login))
+	login_row.add_child(_button("Register", _do_register))
+	account_box.add_child(login_row)
+	logout_btn = _button("Log out", func(): Net.logout())
+	logout_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	account_box.add_child(logout_btn)
+
+
+func _do_login() -> void:
+	Net.login(user_edit.text.strip_edges(), pass_edit.text)
+	pass_edit.text = ""
+
+
+func _do_register() -> void:
+	Net.register(user_edit.text.strip_edges(), pass_edit.text)
+	pass_edit.text = ""
+
+
+func _refresh_account() -> void:
+	if account_box == null:
+		return
+	account_box.visible = Net.accounts_enabled
+	if not Net.accounts_enabled:
+		return
+	var a := Net.account
+	if a.is_empty():
+		account_label.text = "Playing as a guest. Log in to earn XP and unlock fish."
+	else:
+		account_label.text = "Logged in as %s - level %d (%d/%d XP)" % [a["name"], a["level"], a["into"], a["need"]]
+	login_row.visible = a.is_empty()
+	logout_btn.visible = not a.is_empty()
 
 
 func _wins_text(w: int) -> String:
@@ -600,6 +672,10 @@ func _refresh_lobby() -> void:
 		var tags := []
 		if teams:
 			tags.append(Net.TEAM_NAMES[p["team"]])
+		if p.get("level", 0) > 0:
+			tags.append("lv %d" % p["level"])
+		elif Net.accounts_enabled:
+			tags.append("guest")
 		tags.append(Fish.stats(p.get("fish", 0))["name"])
 		if id == r["leader"]:
 			tags.append("host")
@@ -623,9 +699,13 @@ func _refresh_lobby() -> void:
 		set_wins.set_value_no_signal(r["wins"])
 
 	# Fish
-	var fs := Fish.stats(_my_fish())
-	fish_label.text = fs["name"]
-	fish_stats.text = "%s\nReach %d%%, power %d%%, speed %d%%, %.2fs between swings" % [fs["desc"],
+	if fish_preview < 0 or Accounts.fish_unlocked(fish_preview, Net.my_level()):
+		fish_preview = _my_fish()
+	var fs := Fish.stats(fish_preview)
+	var locked := not Accounts.fish_unlocked(fish_preview, Net.my_level())
+	fish_label.text = fs["name"] + (" (locked)" if locked else "")
+	fish_stats.text = "%s\nReach %d%%, power %d%%, speed %d%%, %.2fs between swings" % [
+		("Unlocks at level %d" % Accounts.FISH_UNLOCK.get(fish_preview, 1)) if locked else fs["desc"],
 		roundi(fs["reach"] * 100), roundi(fs["power"] * 100), roundi(fs["speed"] * 100), fs["cooldown"]]
 
 	start_btn.visible = leader

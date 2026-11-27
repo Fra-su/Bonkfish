@@ -136,6 +136,7 @@ func host_dedicated() -> void:
 		get_tree().quit(1)
 		return
 	dedicated = true
+	accounts = AccountsScript.new()
 	# A headless server otherwise spins as fast as the CPU allows, starving itself (and costing
 	# Railway usage). It only relays and runs round logic, so 60 fps / 30 physics ticks is plenty.
 	Engine.max_fps = 60
@@ -215,6 +216,11 @@ func _c_pong(t: int) -> void:
 
 
 func _process(delta: float) -> void:
+	if accounts:
+		_save_timer -= delta
+		if _save_timer <= 0.0:
+			_save_timer = 5.0
+			accounts.flush()
 	if is_online() and not multiplayer.is_server():
 		_ping_timer -= delta
 		if _ping_timer <= 0.0:
@@ -410,6 +416,8 @@ func leave() -> void:
 		_stop_tunnel()
 		hosting = false
 	_online_url = ""
+	account = {}
+	accounts_enabled = false
 	room = {}
 	players = {}
 	spectating = false
@@ -451,6 +459,7 @@ func _on_peer_disconnected(id: int) -> void:
 		_connected_at.erase(id)
 		_bucket.erase(id)
 		_strikes.erase(id)
+		peer_account.erase(id)
 
 
 # =============================================================================
@@ -629,7 +638,7 @@ func _join(id: int, code: String) -> void:
 		_leave(id)
 	r["joined"] += 1
 	r["players"][id] = {"name": peer_names.get(id, "Fish"), "color": Color.WHITE, "score": 0,
-		"fish": 0, "team": _smaller_team(r), "joined": r["joined"]}
+		"fish": 0, "team": _smaller_team(r), "joined": r["joined"], "level": _peer_level(id)}
 	peer_room[id] = code
 	_recolor(r)
 	_push(code)
@@ -704,6 +713,7 @@ func _s_hello(pname: String) -> void:
 		return
 	_connected_at.erase(id)
 	peer_names[id] = _clean_name(pname)
+	_to_peer(id, "_c_server_info", [accounts != null])
 	if not dedicated and not rooms.is_empty():
 		_join(id, rooms.keys()[0])   # LAN/Steam: straight into the host's room
 	else:
@@ -795,7 +805,11 @@ func _s_fish(i: int) -> void:
 	var r := _member_room(id)
 	if r.is_empty() or r["in_game"]:
 		return
-	r["players"][id]["fish"] = posmod(i, preload("res://Fish.gd").LINEUP.size())
+	var fish := posmod(i, preload("res://Fish.gd").LINEUP.size())
+	if accounts and not AccountsScript.fish_unlocked(fish, maxi(1, _peer_level(id))):
+		_to_peer(id, "_c_error", ["That fish is locked."])
+		return
+	r["players"][id]["fish"] = fish
 	_push(r["code"])
 
 
@@ -1005,6 +1019,180 @@ func _c_go_browser(msg: String) -> void:
 @rpc("authority", "reliable")
 func _c_go_lobby() -> void:
 	get_tree().change_scene_to_file("res://Main.tscn")
+
+
+# =============================================================================
+# Accounts + progression (official/dedicated server only)
+# =============================================================================
+# PC-hosted, LAN and Steam games have no accounts: everyone plays as a guest with every fish.
+
+const AccountsScript := preload("res://Accounts.gd")
+var session_file := "user://session.cfg"
+
+signal account_changed
+signal xp_gained(amount: int, reason: String, unlocked: Array)
+
+# server
+var accounts: RefCounted = null     # AccountsScript instance on the dedicated server
+var peer_account := {}              # peer id -> account key (lowercase username)
+var _save_timer := 5.0
+
+# client
+var accounts_enabled := false
+var account := {}                   # {name, xp, level, into, need} when logged in
+
+
+func is_logged_in() -> bool:
+	return not account.is_empty()
+
+
+## Level used for fish unlocks: guests are level 1; servers without accounts unlock everything.
+func my_level() -> int:
+	if not accounts_enabled:
+		return AccountsScript.MAX_LEVEL
+	return account.get("level", 1)
+
+
+func register(uname: String, password: String) -> void: _to_server("_s_register", [uname, password])
+func login(uname: String, password: String) -> void:    _to_server("_s_login", [uname, password])
+
+
+func logout() -> void:
+	_to_server("_s_logout", [_saved_token()])
+	_save_token("")
+	account = {}
+	account_changed.emit()
+
+
+func _saved_token() -> String:
+	var cf := ConfigFile.new()
+	return cf.get_value("s", "token", "") if cf.load(session_file) == OK else ""
+
+
+func _save_token(token: String) -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("s", "token", token)
+	cf.save(session_file)
+
+
+# --- server side ---
+
+func _peer_level(id: int) -> int:
+	if accounts and peer_account.has(id):
+		return accounts.profile(peer_account[id]).get("level", 1)
+	return 0
+
+
+func _signed_in(id: int, res: Dictionary) -> void:
+	if not res["ok"]:
+		_to_peer(id, "_c_auth", [false, {}, "", res["error"]])
+		return
+	# One session per account: log out any other connection using it.
+	for other in peer_account.keys():
+		if other != id and peer_account[other] == res["key"]:
+			peer_account.erase(other)
+			_to_peer(other, "_c_auth", [false, {}, "", "Logged in somewhere else."])
+	peer_account[id] = res["key"]
+	var prof: Dictionary = accounts.profile(res["key"])
+	peer_names[id] = prof["name"]
+	_to_peer(id, "_c_auth", [true, prof, res["token"], ""])
+	_refresh_member(id)
+
+
+## Name/level changed (login, logout, level up): update the player's room entry.
+func _refresh_member(id: int) -> void:
+	var r := _member_room(id)
+	if r.is_empty():
+		return
+	r["players"][id]["name"] = peer_names.get(id, "Fish")
+	r["players"][id]["level"] = _peer_level(id)
+	_push(r["code"])
+
+
+@rpc("any_peer", "reliable")
+func _s_register(uname: String, password: String) -> void:
+	var id := _sender()
+	if accounts == null or not _ok(id, 10.0):
+		return
+	_signed_in(id, accounts.register(_clean_text(uname, 14), password.substr(0, 64)))
+
+
+@rpc("any_peer", "reliable")
+func _s_login(uname: String, password: String) -> void:
+	var id := _sender()
+	if accounts == null or not _ok(id, 6.0):
+		return
+	_signed_in(id, accounts.login(_clean_text(uname, 14), password.substr(0, 64)))
+
+
+@rpc("any_peer", "reliable")
+func _s_resume(token: String) -> void:
+	var id := _sender()
+	if accounts == null or not _ok(id, 3.0) or token.length() != 64:
+		return
+	var res: Dictionary = accounts.resume(token)
+	if res["ok"]:
+		_signed_in(id, res)
+	else:
+		_to_peer(id, "_c_auth", [false, {}, "", ""])   # quietly drop the stale token
+
+
+@rpc("any_peer", "reliable")
+func _s_logout(token: String) -> void:
+	var id := _sender()
+	if accounts == null or not _ok(id) or not peer_account.has(id):
+		return
+	accounts.logout(peer_account[id], token)
+	peer_account.erase(id)
+	_refresh_member(id)
+
+
+## Called by a room's Game (server). No-op for guests and servers without accounts.
+func add_xp(id: int, amount: int, reason: String) -> void:
+	if accounts == null or not peer_account.has(id) or amount <= 0:
+		return
+	var res: Array = accounts.add_xp(peer_account[id], amount)
+	var unlocked := []
+	if res[1] > res[0]:
+		for fish in AccountsScript.FISH_UNLOCK:
+			var need: int = AccountsScript.FISH_UNLOCK[fish]
+			if need > res[0] and need <= res[1]:
+				unlocked.append(fish)
+		_refresh_member(id)
+	_to_peer(id, "_c_xp", [amount, reason, accounts.profile(peer_account[id]), unlocked])
+
+
+# --- client side ---
+
+@rpc("authority", "reliable")
+func _c_server_info(has_accounts: bool) -> void:
+	accounts_enabled = has_accounts
+	if has_accounts and _saved_token() != "":
+		_to_server("_s_resume", [_saved_token()])
+	account_changed.emit()
+
+
+@rpc("authority", "reliable")
+func _c_auth(ok: bool, profile: Dictionary, token: String, error: String) -> void:
+	if ok:
+		account = profile
+		if token != "":
+			_save_token(token)
+		status.emit("")
+	else:
+		account = {}
+		if error == "" or error.begins_with("Logged in somewhere"):
+			_save_token("")
+		if error != "":
+			status.emit(error)
+	account_changed.emit()
+
+
+@rpc("authority", "reliable")
+func _c_xp(amount: int, reason: String, profile: Dictionary, unlocked: Array) -> void:
+	account = profile
+	xp_gained.emit(amount, reason, unlocked)
+	account_changed.emit()
 
 
 # =============================================================================

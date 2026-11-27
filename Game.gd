@@ -3,6 +3,7 @@ extends Node3D
 
 const PLAYER := preload("res://Player.tscn")
 const Powerup := preload("res://Powerup.gd")
+const Fish := preload("res://Fish.gd")
 const TILE := 3.0
 const FALL_Y := -5.0
 
@@ -100,6 +101,7 @@ func _ready() -> void:
 	for id in ids:
 		_spawn_player(id)
 	Net.player_left.connect(_on_net_player_left)
+	Net.xp_gained.connect(_on_xp)
 	_build_tiles(10.5)
 	free_cam = preload("res://SpecCam.gd").new()
 	free_cam.game = self
@@ -304,6 +306,13 @@ func pname(id: int) -> String:
 		return roster()[id]["name"]
 	var p := get_player(id)
 	return p.display_name if p else "???"
+
+
+func _on_xp(amount: int, reason: String, unlocked: Array) -> void:
+	add_feed("+%d XP (%s)" % [amount, reason])
+	if not unlocked.is_empty():
+		var names := unlocked.map(func(f): return Fish.stats(f)["name"])
+		show_banner("", "Level %d - unlocked %s" % [Net.account.get("level", 1), ", ".join(names)], 3.0)
 
 
 func _on_net_player_left(code: String, id: int) -> void:
@@ -550,6 +559,8 @@ func report_fall(hitter: int) -> void:
 	if state != "fight" or not alive.has(id) or not Net.allow(id):
 		return
 	alive.erase(id)
+	if started_with > 1 and hitter != id and members().has(hitter):
+		Net.add_xp(hitter, Net.AccountsScript.XP_KNOCKOUT, "knockout")
 	bc("_player_out", [id, hitter])
 	_check_end()
 
@@ -601,6 +612,18 @@ func _check_end() -> void:
 		Net.add_score(room_code, scorers)
 		var need := wins_needed()   # 0 = endless: never ends on score
 		match_done = need > 0 and scorers.any(func(id): return roster().has(id) and roster()[id]["score"] >= need)
+	if started_with > 1:   # no XP for solo practice
+		var A = Net.AccountsScript
+		for id in members():
+			var xp: int = A.XP_ROUND
+			var why := "round"
+			if id in scorers:
+				xp += A.XP_ROUND_WIN
+				why = "round win"
+				if match_done:
+					xp += A.XP_MATCH_WIN
+					why = "match win"
+			Net.add_xp(id, xp, why)
 	bc("_round_over", [winner, team])
 	await get_tree().create_timer(4.0).timeout
 	if not is_inside_tree():
@@ -799,8 +822,9 @@ func show_banner(big: String, small: String, hold := 0.0) -> void:
 	sub_banner.text = small
 	if _banner_tw:
 		_banner_tw.kill()
-	_banner_tw = create_tween()
+		_banner_tw = null
 	if hold > 0.0:
+		_banner_tw = create_tween()
 		_banner_tw.tween_interval(hold)
 		_banner_tw.tween_callback(func(): sub_banner.text = "")
 

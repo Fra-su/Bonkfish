@@ -99,6 +99,26 @@ Only the server then runs on Railway.
 
 ---
 
+## Accounts: give the server a Volume (do this once)
+
+Accounts and XP are saved to a file on the game server. Railway containers lose their files on
+every redeploy, so the server needs a **Volume** (a small persistent disk):
+
+1. In Railway, open the **server** service.
+2. Right-click the service (or press **Ctrl+K**) -> **Attach Volume** / **Create Volume**.
+3. Set the **mount path** to `/data`.
+4. Open the service's **Variables** tab and add `BONKFISH_DATA_DIR` = `/data`.
+5. Deploy (staged-changes bar -> **Deploy**). The deploy log should say
+   `Accounts: 0 loaded from /data/accounts.json`.
+
+Without this the game still works, but every redeploy wipes all accounts. Volumes are billed for
+storage, which for a small JSON file is effectively nothing.
+
+Only the official server has accounts. Games hosted on a PC, over LAN or through Steam have no
+accounts: everyone plays as a guest with every fish unlocked.
+
+---
+
 ## Hosting a game on your own PC (low ping for nearby friends)
 
 The desktop app (run from Godot, or an exported Windows build) has **Host Game on This PC**.
