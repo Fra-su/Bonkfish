@@ -18,8 +18,11 @@ WORKDIR /game
 COPY . /game
 # Steam is desktop-only; the server never uses it.
 RUN rm -rf /game/addons/godotsteam /game/deploy \
- && (timeout 300 godot --headless --path /game --import 2>&1 | tail -n 20; true) \
- && echo "imported files:" && ls /game/.godot/imported | wc -l
+ && echo "[build] project files:" && ls /game | head -n 40 \
+ && godot --version; echo "[build] godot --version exit=$?" \
+ ; timeout 300 godot --headless --verbose --path /game --import > /tmp/import.log 2>&1; echo "[build] import exit=$?" \
+ ; tail -n 40 /tmp/import.log \
+ ; echo "[build] imported files: $(ls /game/.godot/imported 2>/dev/null | wc -l)"
 
 # Railway injects $PORT; Net.gd listens on it (7777 when unset).
 ENV PORT=7777
