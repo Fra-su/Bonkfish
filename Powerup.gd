@@ -4,12 +4,12 @@ extends Node3D
 enum { MEGA, ZOOM, ANCHOR, BUBBLE, SPRING, FRESH }
 
 const INFO := [
-	{"name": "MEGA FISH", "letter": "M", "color": Color("ff6b6b"), "time": 8.0, "desc": "Huge fish, double bonk power"},
-	{"name": "ZOOM", "letter": "Z", "color": Color("ffd43b"), "time": 8.0, "desc": "Run way faster"},
-	{"name": "ANCHOR", "letter": "A", "color": Color("495057"), "time": 8.0, "desc": "Barely budge when bonked"},
-	{"name": "BUBBLE", "letter": "B", "color": Color("74c0fc"), "time": 15.0, "desc": "Blocks the next bonk"},
-	{"name": "SPRING", "letter": "S", "color": Color("69db7c"), "time": 10.0, "desc": "Big jumps + double jump"},
-	{"name": "FRESH", "letter": "+", "color": Color("f783ac"), "time": 0.0, "desc": "Bonk meter reset to 0%"},
+	{"name": "Mega", "letter": "M", "color": Color("ff6b6b"), "time": 8.0, "desc": "Bigger fish, 2x knockback"},
+	{"name": "Speed", "letter": "Z", "color": Color("ffd43b"), "time": 8.0, "desc": "Faster movement"},
+	{"name": "Anchor", "letter": "A", "color": Color("495057"), "time": 8.0, "desc": "Less knockback taken"},
+	{"name": "Shield", "letter": "B", "color": Color("74c0fc"), "time": 15.0, "desc": "Blocks one hit"},
+	{"name": "Jump", "letter": "S", "color": Color("69db7c"), "time": 10.0, "desc": "Higher jump, double jump"},
+	{"name": "Heal", "letter": "+", "color": Color("f783ac"), "time": 0.0, "desc": "Damage reset to 0%"},
 ]
 
 var type := 0

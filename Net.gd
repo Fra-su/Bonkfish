@@ -253,7 +253,7 @@ func host_online(pname: String) -> bool:
 	peer.max_queued_packets = 512
 	peer.handshake_timeout = 5.0
 	if peer.create_server(PORT) != OK:
-		status.emit("Couldn't host - is port %d already in use?" % PORT)
+		status.emit("Couldn't host: port %d is in use." % PORT)
 		return false
 	multiplayer.multiplayer_peer = peer
 	hosting = true
@@ -279,7 +279,9 @@ func share_link() -> String:
 func _find_cloudflared() -> String:
 	# Next to the game, or anywhere on PATH.
 	for p in [OS.get_executable_path().get_base_dir().path_join("cloudflared.exe"),
-			ProjectSettings.globalize_path("res://").path_join("cloudflared.exe")]:
+			ProjectSettings.globalize_path("res://").path_join("cloudflared.exe"),
+			"C:/Program Files (x86)/cloudflared/cloudflared.exe",   # winget / installer default
+			"C:/Program Files/cloudflared/cloudflared.exe"]:
 		if FileAccess.file_exists(p):
 			return p
 	var out := []
@@ -305,7 +307,7 @@ func _start_tunnel() -> void:
 	_tunnel_pipe = info["stderr"]   # cloudflared prints the address on stderr
 	_tunnel_thread = Thread.new()
 	_tunnel_thread.start(_read_tunnel)
-	status.emit("Opening an internet link for your game...")
+	status.emit("Starting tunnel...")
 
 
 func _read_tunnel() -> void:
@@ -349,7 +351,7 @@ func _notification(what: int) -> void:
 func host_game(pname: String) -> bool:
 	var peer := ENetMultiplayerPeer.new()
 	if peer.create_server(PORT, 32) != OK:
-		status.emit("Couldn't host - is port %d already in use?" % PORT)
+		status.emit("Couldn't host: port %d is in use." % PORT)
 		return false
 	multiplayer.multiplayer_peer = peer
 	_host_setup(pname)
@@ -363,7 +365,7 @@ func _host_setup(pname: String) -> void:
 	peer_room.clear()
 	peer_names.clear()
 	peer_names[1] = _clean_name(pname)
-	_create(1, {"name": "%s's pond" % _clean_name(pname), "public": true, "max": MAX_PLAYERS,
+	_create(1, {"name": "%s's room" % _clean_name(pname), "public": true, "max": MAX_PLAYERS,
 		"mode": MODE_FFA, "wins": 3})
 
 
@@ -375,7 +377,7 @@ func join_game(ip: String, pname: String) -> bool:
 		status.emit("That address doesn't look right.")
 		return false
 	multiplayer.multiplayer_peer = peer
-	status.emit("Casting a line to %s..." % ip)
+	status.emit("Connecting...")
 	return true
 
 
@@ -390,10 +392,10 @@ func join_online(url: String, pname: String) -> void:
 func _connect_ws() -> void:
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_client(_online_url) != OK:
-		status.emit("That server address doesn't look right.")
+		status.emit("Invalid server address.")
 		return
 	multiplayer.multiplayer_peer = peer
-	status.emit("Casting a line to the server..." if _retries == 0 else "Waking the server up... (try %d)" % (_retries + 1))
+	status.emit("Connecting..." if _retries == 0 else "Connecting... (attempt %d)" % (_retries + 1))
 
 
 ## Disconnect completely.
@@ -429,16 +431,16 @@ func _on_failed() -> void:
 		_retries += 1
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		get_tree().create_timer(2.5).timeout.connect(_connect_ws)
-		status.emit("Waking the server up...")
+		status.emit("Connecting...")
 		return
 	leave()
-	status.emit("Couldn't connect. Is the server running?")
+	status.emit("Couldn't connect.")
 
 
 func _on_server_gone() -> void:
 	var was_online := _online_url != ""
 	leave()
-	pending_status = "Lost connection to the server." if was_online else "The host left the pond."
+	pending_status = "Disconnected from server." if was_online else "Host disconnected."
 	get_tree().change_scene_to_file("res://Main.tscn")
 
 
@@ -593,14 +595,14 @@ func _smaller_team(r: Dictionary) -> int:
 
 func _create(id: int, s: Dictionary) -> void:
 	if rooms.size() >= MAX_ROOMS:
-		_to_peer(id, "_c_error", ["The server has too many rooms open right now. Try joining one!"])
+		_to_peer(id, "_c_error", ["Room limit reached on this server."])
 		return
 	if peer_room.has(id):
 		_leave(id)
 	var code := _new_code()
 	var rname := _clean_text(_get_str(s, "name", ""), 24)
 	if rname == "":
-		rname = "%s's pond" % peer_names.get(id, "Fish")
+		rname = "%s's room" % peer_names.get(id, "Fish")
 	rooms[code] = {"code": code, "name": rname, "public": _get_bool(s, "public", true),
 		"max": clampi(_get_int(s, "max", MAX_PLAYERS), 2, MAX_PLAYERS),
 		"mode": clampi(_get_int(s, "mode", MODE_FFA), 0, MODES.size() - 1),
@@ -612,16 +614,16 @@ func _create(id: int, s: Dictionary) -> void:
 
 func _join(id: int, code: String) -> void:
 	if not rooms.has(code):
-		_to_peer(id, "_c_error", ["No room with code %s." % code])
+		_to_peer(id, "_c_error", ["Room %s not found." % code])
 		return
 	var r: Dictionary = rooms[code]
 	if r["players"].has(id):
 		return
 	if r["in_game"]:
-		_to_peer(id, "_c_error", ["That match is in progress - you can spectate it instead."])
+		_to_peer(id, "_c_error", ["Match in progress. You can spectate it."])
 		return
 	if r["players"].size() >= r["max"]:
-		_to_peer(id, "_c_error", ["That room is full."])
+		_to_peer(id, "_c_error", ["Room is full."])
 		return
 	if peer_room.has(id):
 		_leave(id)
@@ -631,26 +633,26 @@ func _join(id: int, code: String) -> void:
 	peer_room[id] = code
 	_recolor(r)
 	_push(code)
-	_room_say(code, "%s joined the dock" % peer_names.get(id, "Fish"))
+	_room_say(code, "%s joined" % peer_names.get(id, "Fish"))
 
 
 func _spectate(id: int, code: String) -> void:
 	if not rooms.has(code):
-		_to_peer(id, "_c_error", ["No room with code %s." % code])
+		_to_peer(id, "_c_error", ["Room %s not found." % code])
 		return
 	var r: Dictionary = rooms[code]
 	if not r["in_game"] or r["game"] == null:
-		_to_peer(id, "_c_error", ["There's no match to watch in that room right now."])
+		_to_peer(id, "_c_error", ["No match running in that room."])
 		return
 	if r["spectators"].size() >= 16:
-		_to_peer(id, "_c_error", ["Too many spectators in that room."])
+		_to_peer(id, "_c_error", ["Spectator limit reached."])
 		return
 	if peer_room.has(id):
 		_leave(id)
 	r["spectators"][id] = peer_names.get(id, "Fish")
 	peer_room[id] = code
 	_push(code)
-	_room_say(code, "%s is watching" % peer_names.get(id, "Fish"))
+	_room_say(code, "%s is spectating" % peer_names.get(id, "Fish"))
 	_to_peer(id, "_c_spectate", [code])
 
 
@@ -672,7 +674,7 @@ func _leave(id: int) -> void:
 	if r["players"].is_empty():
 		for sid in r["spectators"].keys():   # nobody left to watch
 			peer_room.erase(sid)
-			_to_peer(sid, "_c_go_browser", ["That match ended."])
+			_to_peer(sid, "_c_go_browser", ["Match ended."])
 		if r["game"] and is_instance_valid(r["game"]) and r["game"] != get_tree().current_scene:
 			r["game"].queue_free()
 		rooms.erase(code)
@@ -832,7 +834,7 @@ func _s_chat(text: String) -> void:
 	if not rooms.has(code) or text == "":
 		return
 	var watching: bool = rooms[code]["spectators"].has(id)
-	_room_say(code, "%s%s: %s" % [peer_names.get(id, "Fish"), " (watching)" if watching else "", text])
+	_room_say(code, "%s%s: %s" % [peer_names.get(id, "Fish"), " (spectator)" if watching else "", text])
 
 
 @rpc("any_peer", "reliable")
@@ -895,7 +897,7 @@ func end_match(code: String) -> void:
 	_set_lobby_joinable(true)
 	for sid in r["spectators"].keys():   # spectators go back to the room browser
 		peer_room.erase(sid)
-		_to_peer(sid, "_c_go_browser", ["The match you were watching ended."])
+		_to_peer(sid, "_c_go_browser", ["Match ended."])
 	r["spectators"].clear()
 	_push(code)
 	for pid in r["players"]:
@@ -971,7 +973,7 @@ func _c_chat(line: String) -> void:
 func _c_kicked() -> void:
 	room = {}
 	players = {}
-	pending_status = "You were removed from the room."
+	pending_status = "You were kicked."
 	get_tree().change_scene_to_file("res://Main.tscn")
 
 
@@ -1117,61 +1119,54 @@ func _set_lobby_joinable(joinable: bool) -> void:
 
 func make_theme() -> Theme:
 	var t := Theme.new()
-	t.default_font_size = 20
-	var navy := Color("1d3557")
+	t.default_font_size = 18
+	var text := Color("e8edf2")
 
 	var btn := StyleBoxFlat.new()
-	btn.bg_color = Color("fff3d6")
-	btn.border_color = Color("e0b872")
-	btn.border_width_bottom = 5
-	btn.set_corner_radius_all(14)
-	btn.content_margin_left = 18; btn.content_margin_right = 18
-	btn.content_margin_top = 8; btn.content_margin_bottom = 10
+	btn.bg_color = Color("3b5166")
+	btn.set_corner_radius_all(4)
+	btn.content_margin_left = 14; btn.content_margin_right = 14
+	btn.content_margin_top = 6; btn.content_margin_bottom = 6
 	var hover := btn.duplicate() as StyleBoxFlat
-	hover.bg_color = Color("ffd166")
-	hover.border_color = Color("d99a2b")
-	var pressed := hover.duplicate() as StyleBoxFlat
-	pressed.border_width_bottom = 1
-	pressed.content_margin_top = 12
+	hover.bg_color = Color("4a6580")
+	var pressed := btn.duplicate() as StyleBoxFlat
+	pressed.bg_color = Color("2c3e50")
 	var disabled := btn.duplicate() as StyleBoxFlat
-	disabled.bg_color = Color(1, 1, 1, 0.35)
+	disabled.bg_color = Color("2f3d4a")
 	for s in ["normal", "focus"]:
 		t.set_stylebox(s, "Button", btn)
 	t.set_stylebox("hover", "Button", hover)
 	t.set_stylebox("pressed", "Button", pressed)
 	t.set_stylebox("disabled", "Button", disabled)
 	for c in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
-		t.set_color(c, "Button", navy)
-	t.set_color("font_disabled_color", "Button", Color(navy, 0.5))
+		t.set_color(c, "Button", text)
+	t.set_color("font_disabled_color", "Button", Color(text, 0.4))
 
 	var panel := StyleBoxFlat.new()
-	panel.bg_color = Color(1, 1, 1, 0.9)
-	panel.set_corner_radius_all(22)
-	panel.set_content_margin_all(22)
-	panel.shadow_color = Color(0, 0.1, 0.2, 0.25)
-	panel.shadow_size = 14
+	panel.bg_color = Color("2a3a4a")
+	panel.set_corner_radius_all(4)
+	panel.set_content_margin_all(16)
 	t.set_stylebox("panel", "PanelContainer", panel)
 
 	var row := StyleBoxFlat.new()
-	row.bg_color = Color("eef6fb")
-	row.set_corner_radius_all(10)
+	row.bg_color = Color("324456")
+	row.set_corner_radius_all(3)
 	row.set_content_margin_all(6)
 	t.set_type_variation("PanelRow", "PanelContainer")
 	t.set_stylebox("panel", "PanelRow", row)
 
 	var edit := StyleBoxFlat.new()
-	edit.bg_color = Color("eef6fb")
-	edit.border_color = Color("a8d8ea")
-	edit.set_border_width_all(2)
-	edit.set_corner_radius_all(10)
-	edit.set_content_margin_all(8)
+	edit.bg_color = Color("1e2a36")
+	edit.set_corner_radius_all(3)
+	edit.set_content_margin_all(6)
 	for ctl in ["LineEdit", "SpinBox"]:
 		t.set_stylebox("normal", ctl, edit)
 		t.set_stylebox("focus", ctl, edit)
-	t.set_color("font_color", "LineEdit", navy)
-	t.set_color("font_color", "Label", navy)
-	t.set_color("font_color", "CheckBox", navy)
-	t.set_color("font_hover_color", "CheckBox", navy)
-	t.set_color("font_pressed_color", "CheckBox", navy)
-	t.set_color("font_color", "OptionButton", navy)
+	for s in ["normal", "hover", "pressed", "focus", "hover_pressed", "disabled"]:
+		t.set_stylebox(s, "CheckBox", StyleBoxEmpty.new())
+	for ctl in ["Label", "LineEdit", "CheckBox", "OptionButton"]:
+		t.set_color("font_color", ctl, text)
+	t.set_color("font_hover_color", "CheckBox", text)
+	t.set_color("font_pressed_color", "CheckBox", text)
+	t.set_color("font_placeholder_color", "LineEdit", Color(text, 0.35))
 	return t

@@ -44,7 +44,7 @@ func _ready() -> void:
 
 func _build() -> void:
 	overlay = ColorRect.new()
-	overlay.color = Color(0.07, 0.2, 0.3, 0.96)
+	overlay.color = Color("22313f")
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP   # block clicks to the game underneath
 	overlay.visible = false
@@ -60,16 +60,16 @@ func _build() -> void:
 	v.add_theme_constant_override("separation", 14)
 	panel.add_child(v)
 	var title := Label.new()
-	title.text = "BONKFISH IS OPEN ELSEWHERE"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 28)
+	title.text = "Already open in another tab"
+	
+	title.add_theme_font_size_override("font_size", 22)
 	v.add_child(title)
 	msg = Label.new()
 	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	
 	v.add_child(msg)
 	var b := Button.new()
-	b.text = "Play here instead"
+	b.text = "Use this tab"
 	b.pressed.connect(_take_over)
 	v.add_child(b)
 
@@ -89,10 +89,10 @@ func _process(_delta: float) -> void:
 	_was = state
 	match state:
 		"blocked":
-			msg.text = "Bonkfish is already open in another tab of this browser.\nSwitch to that tab, or play here instead (the other tab will disconnect)."
+			msg.text = "Bonkfish is open in another tab. Using this tab will disconnect the other one."
 			overlay.visible = true
 		"kicked":
-			msg.text = "You opened Bonkfish in another tab, so this one was disconnected.\nSwitch to the new tab, or play here instead."
+			msg.text = "Bonkfish was opened in another tab, so this one was disconnected."
 			overlay.visible = true
 			if Net.is_online():
 				Net.leave()

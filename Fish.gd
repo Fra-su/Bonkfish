@@ -2,19 +2,19 @@ extends RefCounted
 ## The fish arsenal: stats per fish + automatic "hold it by the tail" placement for any fish mesh.
 
 const LINEUP := [
-	{"name": "Koi", "mesh": "res://Fish/OBJ/Koi.obj", "desc": "All-rounder",
+	{"name": "Koi", "mesh": "res://Fish/OBJ/Koi.obj", "desc": "Balanced",
 		"reach": 1.0, "power": 1.0, "cooldown": 0.5, "speed": 1.0, "length": 0.9},
-	{"name": "Swordfish", "mesh": "res://Fish/OBJ/Swordfish.obj", "desc": "Huge reach, light hits",
+	{"name": "Swordfish", "mesh": "res://Fish/OBJ/Swordfish.obj", "desc": "Long reach, weak hits",
 		"reach": 1.5, "power": 0.8, "cooldown": 0.55, "speed": 1.0, "length": 1.4},
-	{"name": "Pufferfish", "mesh": "res://Fish/OBJ/Puffer.obj", "desc": "Short, but sends people flying",
+	{"name": "Pufferfish", "mesh": "res://Fish/OBJ/Puffer.obj", "desc": "Short reach, strong hits",
 		"reach": 0.8, "power": 1.5, "cooldown": 0.8, "speed": 0.9, "length": 0.7},
-	{"name": "Shark", "mesh": "res://Fish/OBJ/Shark.obj", "desc": "Heavy hitter, slow swing",
+	{"name": "Shark", "mesh": "res://Fish/OBJ/Shark.obj", "desc": "Strong, slow swing",
 		"reach": 1.2, "power": 1.35, "cooldown": 0.75, "speed": 0.85, "length": 1.2},
-	{"name": "Tetra", "mesh": "res://Fish/OBJ/Tetra.obj", "desc": "Tiny and lightning fast",
+	{"name": "Tetra", "mesh": "res://Fish/OBJ/Tetra.obj", "desc": "Fast swing, weak hits",
 		"reach": 0.75, "power": 0.7, "cooldown": 0.28, "speed": 1.15, "length": 0.55},
-	{"name": "Tuna", "mesh": "res://Fish/OBJ/Tuna.obj", "desc": "Solid and dependable",
+	{"name": "Tuna", "mesh": "res://Fish/OBJ/Tuna.obj", "desc": "Slightly stronger",
 		"reach": 1.1, "power": 1.15, "cooldown": 0.6, "speed": 0.95, "length": 1.0},
-	{"name": "Anglerfish", "mesh": "res://Fish/OBJ/Anglerfish.obj", "desc": "Hits harder the faster you run",
+	{"name": "Anglerfish", "mesh": "res://Fish/OBJ/Anglerfish.obj", "desc": "Stronger while running",
 		"reach": 1.0, "power": 0.9, "cooldown": 0.55, "speed": 1.05, "length": 0.85},
 ]
 

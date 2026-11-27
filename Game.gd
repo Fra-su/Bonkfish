@@ -7,13 +7,13 @@ const TILE := 3.0
 const FALL_Y := -5.0
 
 const MODIFIERS := [
-	{"name": "Classic Bonk", "desc": "No tricks. Just fish."},
-	{"name": "Moon Bonk", "desc": "Low gravity - floaty launches!"},
-	{"name": "Ice Rink", "desc": "The dock is slippery..."},
-	{"name": "Mega Bonks", "desc": "Every bonk hits 50% harder"},
-	{"name": "Tiny Island", "desc": "Not much room to run"},
-	{"name": "Powerup Frenzy", "desc": "Powerups everywhere!"},
-	{"name": "Crumbling Dock", "desc": "Tiles start falling right away"},
+	{"name": "Normal", "desc": ""},
+	{"name": "Low Gravity", "desc": ""},
+	{"name": "Ice", "desc": "Slippery floor"},
+	{"name": "Heavy Hits", "desc": "+50% knockback"},
+	{"name": "Small Map", "desc": ""},
+	{"name": "More Powerups", "desc": ""},
+	{"name": "Crumbling", "desc": "Tiles fall from the start"},
 ]
 enum { CLASSIC, MOON, ICE, MEGA_BONKS, TINY, FRENZY, CRUMBLE }
 
@@ -149,7 +149,7 @@ func _snapshot(m: int, st: String, rn: int, drop: Array, pus: Array) -> void:
 		_spawn_powerup(p[0], p[1], p[2])
 	state = st
 	round_num = rn
-	show_banner("SPECTATING", "%s  -  round %d" % [settings().get("name", ""), rn], 2.5)
+	show_banner("Spectating", "%s, round %d" % [settings().get("name", ""), rn], 2.5)
 
 
 @rpc("authority", "call_local", "reliable")
@@ -315,7 +315,7 @@ func _on_player_left(id: int) -> void:
 	var p := get_player(id)
 	if p == null or p.is_queued_for_deletion():
 		return  # already handled (a listen-host hears about it twice)
-	add_feed("%s swam away" % p.display_name)
+	add_feed("%s left" % p.display_name)
 	p.queue_free()
 	if multiplayer.is_server():
 		alive.erase(id)
@@ -373,14 +373,14 @@ func _begin_round(m: int) -> void:
 
 
 func _countdown() -> void:
-	show_banner("ROUND %d" % round_num if round_num > 0 else "", "")
+	show_banner("Round %d" % round_num if round_num > 0 else "", "")
 	await get_tree().create_timer(0.9).timeout
 	show_banner(MODIFIERS[modifier]["name"], MODIFIERS[modifier]["desc"])
 	await get_tree().create_timer(1.6).timeout
 	for n in ["3", "2", "1"]:
 		show_banner(n, MODIFIERS[modifier]["desc"])
 		await get_tree().create_timer(0.6).timeout
-	show_banner("BONK!", "")
+	show_banner("GO", "")
 	state = "fight"
 	if multiplayer.is_server():
 		alive = get_players().map(func(p): return p.name.to_int())
@@ -480,7 +480,7 @@ func _boat_incoming(angle: float, lateral: float) -> void:
 	node.look_at(node.global_position + dir, Vector3.UP)
 	node.rotate_object_local(Vector3.UP, PI)  # +Z forward
 	boats.append({"node": node, "dir": dir, "side": side, "dist": 0.0})
-	show_banner("", "BOAT INCOMING!  Watch the horizon...", 2.5)
+	show_banner("", "Boat incoming", 2.5)
 
 
 func _update_boats(delta: float) -> void:
@@ -536,7 +536,7 @@ func _powerup_taken(pid: int, who: int) -> void:
 	var p := get_player(who)
 	if p and p.is_multiplayer_authority():
 		p.apply_powerup(n.type)
-		show_banner("", Powerup.INFO[n.type]["name"] + "!  " + Powerup.INFO[n.type]["desc"], 1.8)
+		show_banner("", Powerup.INFO[n.type]["name"] + " - " + Powerup.INFO[n.type]["desc"], 1.8)
 	n.queue_free()
 
 
@@ -560,9 +560,9 @@ func _player_out(id: int, hitter: int) -> void:
 	if p:
 		burst(p.global_position + Vector3(0, 1, 0), Color.WHITE, 40)
 	if hitter != 0 and hitter != id:
-		add_feed("%s bonked %s into the sea!" % [pname(hitter), pname(id)])
+		add_feed("%s knocked out %s" % [pname(hitter), pname(id)])
 	else:
-		add_feed("%s fell in. Splash!" % pname(id))
+		add_feed("%s fell off" % pname(id))
 
 
 func team_of(id: int) -> int:
@@ -618,14 +618,14 @@ func _check_end() -> void:
 func _round_over(winner: int, team: int) -> void:
 	state = "over"
 	if team >= 0:
-		show_banner("%s TEAM WINS!" % Net.TEAM_NAMES[team].to_upper(), "Last team standing")
+		show_banner("%s team wins the round" % Net.TEAM_NAMES[team], "")
 		for p in get_players():
 			if team_of(p.name.to_int()) == team and not p.out:
 				burst(p.global_position + Vector3(0, 2, 0), Net.TEAM_COLORS[team], 40)
 	elif winner == -1:
-		show_banner("SPLASH!", "Everyone's swimming. Next round...")
+		show_banner("Draw", "")
 	else:
-		show_banner("%s WINS!" % pname(winner).to_upper(), "Last fish standing")
+		show_banner("%s wins the round" % pname(winner), "")
 		var p := get_player(winner)
 		if p:
 			burst(p.global_position + Vector3(0, 2, 0), p.color, 60)
@@ -634,9 +634,9 @@ func _round_over(winner: int, team: int) -> void:
 @rpc("authority", "call_local", "reliable")
 func _match_over(winner: int, team: int) -> void:
 	if team >= 0:
-		show_banner("%s TEAM TAKES THE MATCH!" % Net.TEAM_NAMES[team].to_upper(), "Back to the dock in a moment...")
+		show_banner("%s team wins the match" % Net.TEAM_NAMES[team], "Returning to lobby")
 	else:
-		show_banner("%s IS THE BIG FISH!" % pname(winner).to_upper(), "Back to the dock in a moment...")
+		show_banner("%s wins the match" % pname(winner), "Returning to lobby")
 
 
 # --- effects ---------------------------------------------------------------------
@@ -688,8 +688,7 @@ func _build_hud() -> void:
 	root.theme = Net.make_theme()
 	cl.add_child(root)
 
-	banner = _label(84, 20)
-	banner.add_theme_color_override("font_color", Color("ffd166"))
+	banner = _label(60, 8)
 	banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	banner.position = Vector2(-600, 140)
 	banner.size = Vector2(1200, 110)
@@ -749,7 +748,7 @@ func _build_hud() -> void:
 
 	pause_panel = PanelContainer.new()
 	pause_panel.set_anchors_preset(Control.PRESET_CENTER)
-	pause_panel.position = Vector2(-170, -110)
+	pause_panel.position = Vector2(-170, -200)
 	pause_panel.custom_minimum_size = Vector2(340, 0)
 	pause_panel.visible = false
 	root.add_child(pause_panel)
@@ -757,20 +756,24 @@ func _build_hud() -> void:
 	v.add_theme_constant_override("separation", 12)
 	pause_panel.add_child(v)
 	var pt := Label.new()
-	pt.text = "PAUSED"
-	pt.add_theme_font_size_override("font_size", 34)
-	pt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pt.text = "Paused"
+	pt.add_theme_font_size_override("font_size", 26)
 	v.add_child(pt)
+	var controls := Label.new()
+	controls.add_theme_font_size_override("font_size", 15)
+	controls.add_theme_color_override("font_color", Color("9fb3c8"))
+	controls.text = "Move: WASD\nJump: Space\nSprint: Shift\nAttack: left click (hold to charge)\nCamera: T\nMenu: Esc"
+	v.add_child(controls)
 	var resume := Button.new()
 	resume.text = "Resume"
 	resume.pressed.connect(_toggle_pause)
 	v.add_child(resume)
 	end_btn = Button.new()
-	end_btn.text = "End Match (back to room)"
+	end_btn.text = "End match"
 	end_btn.pressed.connect(func(): Net.request_end_match(); _toggle_pause())
 	v.add_child(end_btn)
 	var leave := Button.new()
-	leave.text = "Stop Watching" if spectator else "Leave Match"
+	leave.text = "Stop spectating" if spectator else "Leave match"
 	leave.pressed.connect(func(): Net.leave_match())
 	v.add_child(leave)
 
@@ -794,12 +797,9 @@ func show_banner(big: String, small: String, hold := 0.0) -> void:
 	if big != "" or hold == 0.0:
 		banner.text = big
 	sub_banner.text = small
-	banner.pivot_offset = banner.size / 2
-	banner.scale = Vector2(1.4, 1.4)
 	if _banner_tw:
 		_banner_tw.kill()
 	_banner_tw = create_tween()
-	_banner_tw.tween_property(banner, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	if hold > 0.0:
 		_banner_tw.tween_interval(hold)
 		_banner_tw.tween_callback(func(): sub_banner.text = "")
@@ -837,7 +837,7 @@ func _update_hud() -> void:
 		var pips := ("W %d" % score) if need == 0 else "#".repeat(mini(score, need)) + "-".repeat(maxi(0, need - score))
 		var tag: String = (Net.TEAM_NAMES[r[id].get("team", 0)] + "  ") if is_teams() else ""
 		var l: Label = scoreboard.get_child(i)
-		l.text = "[%s]  %s%s  %s" % [pips, tag, r[id]["name"], "(splashed)" if p and p.out else ""]
+		l.text = "[%s]  %s%s  %s" % [pips, tag, r[id]["name"], "(out)" if p and p.out else ""]
 		l.add_theme_color_override("font_color", r[id]["color"])
 	if Net.ping_ms >= 0:
 		ping_label.text = "ping %d ms" % Net.ping_ms
@@ -846,9 +846,7 @@ func _update_hud() -> void:
 	# Free cam hint (spectators, and fish that got knocked out)
 	if spec_hint.visible:
 		var who: String = free_cam.following_name()
-		spec_hint.text = ("Following %s  |  Tab: next fish  |  F: free cam  |  Wheel: zoom" % who) if who != "" \
-			else "%sFREE CAM  |  WASD + mouse  |  Space/Ctrl: up/down  |  Shift: fast  |  Tab: follow a fish  |  Esc: menu" \
-			% ("SPECTATING  |  " if spectator else "")
+		spec_hint.text = ("Following %s (F for free cam)" % who) if who != "" else "Free cam (Tab to follow a player)"
 	# Local status
 	var lp := local_player()
 	meter_label.visible = lp != null and not lp.out
@@ -862,5 +860,5 @@ func _update_hud() -> void:
 		parts.append("%s %ds" % [Powerup.INFO[k]["name"], ceili(lp.fx_time[k])])
 	if lp.charge > 0.15:
 		var c := clampf(lp.charge / lp.MAX_CHARGE, 0.0, 1.0)
-		parts.push_front("CHARGE " + "|".repeat(int(c * 20)) + ("  MAX!" if c >= 1.0 else ""))
+		parts.push_front("Charge %d%%" % int(c * 100))
 	power_label.text = "   ".join(parts)
