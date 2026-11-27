@@ -140,6 +140,8 @@ and open <http://localhost:8060>. Note the release web build hides the server bo
 
 | Symptom | Fix |
 |---|---|
+| Server build line shows `files=[Dockerfile index.html index.wasm ...]` / "no main scene defined" | The **server** service has Root Directory `deploy/web`. Clear it (repo root). Only the **web** service uses `deploy/web`. |
+| Server domain gives 502 / times out | The domain's port must match `$PORT` Railway gives the server (8080 by default). |
 | "Couldn't connect" in the browser | Check `DEFAULT_SERVER_URL` uses **`wss://`** and your server domain; re-export Web and push. |
 | Server logs show `couldn't listen on port` | Make sure no custom start command overrides the Dockerfile's `CMD`. |
 | Web page is blank / stuck loading | Make sure all files from `deploy/web/` were deployed (especially `index.wasm` and `index.pck`). |

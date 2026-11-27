@@ -25,5 +25,5 @@ RUN rm -rf /game/addons/godotsteam /game/deploy \
 # Railway injects $PORT; Net.gd listens on it (7777 when unset).
 ENV PORT=7777
 EXPOSE 7777
-# Diagnostics first, then the server with verbose startup logging.
-CMD ["sh", "-c", "echo \"[boot] PORT=$PORT cpus=$(nproc)\"; ls /game/.godot >/dev/null 2>&1 && echo '[boot] import cache present' || echo '[boot] NO import cache'; exec godot --headless --verbose --path /game -- --server"]
+# Note: this service's Root Directory must be EMPTY (repo root) - it needs the whole project.
+CMD ["godot", "--headless", "--path", "/game", "--", "--server"]
