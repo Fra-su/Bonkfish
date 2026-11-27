@@ -43,6 +43,9 @@ var chat_text: Label
 var chat_scroll: ScrollContainer
 var chat_edit: LineEdit
 var start_btn: Button
+var share_box: GridContainer
+var share_web: Label
+var share_lan: Label
 var invite_btn: Button
 
 var status_label: Label
@@ -117,14 +120,16 @@ func _build_menu(col: VBoxContainer) -> void:
 	name_edit.max_length = 14
 	name_edit.placeholder_text = "Fish"
 	m.add_child(name_edit)
-	m.add_child(_small("ONLINE"))
+	m.add_child(_small("ONLINE  (leave empty for the official server, or paste a friend's address)"))
 	server_edit = LineEdit.new()
-	server_edit.placeholder_text = Net.DEFAULT_SERVER_URL
-	server_edit.visible = not OS.has_feature("web") or OS.is_debug_build()
+	server_edit.placeholder_text = "Official server"
 	m.add_child(server_edit)
 	m.add_child(_button("Play Online", _on_play_online))
 	if OS.has_feature("web"):
-		return  # browsers can't do Steam, LAN/ENet, or quitting
+		return  # browsers can't host, do Steam, or quit
+	m.add_child(HSeparator.new())
+	m.add_child(_small("HOST ON THIS PC  (you get ~0 ping; friends join with the link it shows)"))
+	m.add_child(_button("Host Game on This PC", _on_host_online))
 	m.add_child(HSeparator.new())
 	if Net.steam_ok:
 		m.add_child(_small("STEAM (signed in as %s)" % Net.steam_name()))
@@ -135,18 +140,7 @@ func _build_menu(col: VBoxContainer) -> void:
 		m.add_child(row)
 		lobby_browser = VBoxContainer.new()
 		m.add_child(lobby_browser)
-	else:
-		m.add_child(_small("Steam not running - LAN / IP play only"))
-	m.add_child(_small("LAN / DIRECT IP"))
-	var lan := HBoxContainer.new()
-	lan.add_theme_constant_override("separation", 10)
-	ip_edit = LineEdit.new()
-	ip_edit.placeholder_text = "127.0.0.1"
-	lan.add_child(_expand(ip_edit))
-	lan.add_child(_button("Join", _on_join))
-	lan.add_child(_button("Host", _on_host))
-	m.add_child(lan)
-	m.add_child(HSeparator.new())
+		m.add_child(HSeparator.new())
 	m.add_child(_button("Quit", func(): get_tree().quit()))
 
 
@@ -248,6 +242,21 @@ func _build_lobby(col: VBoxContainer) -> void:
 	room_info = _small("")
 	room_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(room_info)
+	# Hosting on this PC: how friends get in
+	share_box = GridContainer.new()
+	share_box.columns = 3
+	share_box.add_theme_constant_override("h_separation", 10)
+	v.add_child(share_box)
+	share_box.add_child(_small("Website link (anyone):"))
+	share_web = Label.new()
+	share_web.clip_text = true
+	share_web.custom_minimum_size.x = 520
+	share_box.add_child(share_web)
+	share_box.add_child(_button("Copy", func(): DisplayServer.clipboard_set(Net.share_link())))
+	share_box.add_child(_small("Same Wi-Fi (desktop app):"))
+	share_lan = Label.new()
+	share_box.add_child(share_lan)
+	share_box.add_child(_button("Copy", func(): DisplayServer.clipboard_set(share_lan.text)))
 	var cols := HBoxContainer.new()
 	cols.add_theme_constant_override("separation", 22)
 	v.add_child(cols)
@@ -430,9 +439,22 @@ func _on_play_online() -> void:
 	var url := server_edit.text.strip_edges()
 	if url == "":
 		url = Net.DEFAULT_SERVER_URL
+	url = url.replace("https://", "wss://").replace("http://", "ws://")
 	if not (url.begins_with("ws://") or url.begins_with("wss://")):
-		url = "wss://" + url
+		# Bare LAN addresses (192.168.x.x[:port]) are plain ws://, anything else is wss://
+		var host := url.split(":")[0]
+		var is_lan := host.begins_with("192.168.") or host.begins_with("10.") or host.begins_with("172.") \
+			or host == "localhost" or host == "127.0.0.1"
+		url = ("ws://" if is_lan else "wss://") + url
+		if is_lan and not ":" in url.trim_prefix("ws://"):
+			url += ":%d" % Net.PORT
 	Net.join_online(url, _pname())
+
+
+func _on_host_online() -> void:
+	_save_settings()
+	if Net.host_online(_pname()):
+		status_label.text = ""
 
 
 func _on_host() -> void:
@@ -558,6 +580,11 @@ func _refresh_lobby() -> void:
 	var leader := Net.am_leader()
 	var teams := Net.is_teams()
 	room_title.text = r["name"]
+	share_box.visible = Net.hosting
+	if Net.hosting:
+		share_lan.text = "%s:%d" % [Net.lan_ip(), Net.PORT]
+		share_web.text = Net.share_link() if Net.tunnel_url != "" else \
+			"(install cloudflared to get an internet link - see DEPLOY.md)" if Net._tunnel_pid < 0 else "(opening link...)"
 	room_info.text = "Code: %s   |   %s   |   %d/%d players   |   %s   |   %s" % [
 		r["code"], "Public" if r["public"] else "Private (share the code)", Net.players.size(), r["max"],
 		Net.MODES[r["mode"]], _wins_text(r["wins"])]
@@ -629,6 +656,12 @@ func _load_settings() -> void:
 	if cf.load(SETTINGS) == OK:
 		name_edit.text = cf.get_value("p", "name", "")
 		server_edit.text = cf.get_value("p", "server", "")
+	# Website opened from a host's share link: bonkfish.up.railway.app/?server=abc.trycloudflare.com
+	if OS.has_feature("web"):
+		var s = JavaScriptBridge.eval("new URLSearchParams(location.search).get('server') || ''", true)
+		if typeof(s) == TYPE_STRING and s != "":
+			server_edit.text = s
+			status_label.text = "Joining a friend's game - enter your name and press Play Online."
 		if ip_edit:
 			ip_edit.text = cf.get_value("p", "ip", "")
 

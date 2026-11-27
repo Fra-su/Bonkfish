@@ -42,6 +42,52 @@ var _last_bonk_from := {}            # attacker id -> time (anti-spam)
 const MAX_BONK_POWER := 16.0         # biggest legit power (mega x mega-bonks x heavy fish x charge x run)
 
 
+# --- Hit prediction -----------------------------------------------------------------
+# When you bonk someone, the real launch happens on THEIR machine and only reaches your screen
+# a full round trip later (~200 ms from NZ to the server). So your copy of them predicts it:
+# it starts flying and flopping right away using the same formula, then the prediction fades
+# out as the real synced movement arrives.
+
+const PRED_TIME := 0.45        # how long to trust the prediction before real data must take over
+var _pred_off := Vector3.ZERO  # predicted displacement added on top of the synced position
+var _pred_vel := Vector3.ZERO
+var _pred_t := 0.0
+
+
+## Same launch formula receive_bonk() uses (velocity for a hit of `power` in `dir`).
+func _knockback(dir: Vector3, power: float) -> Vector3:
+	var resist := 0.35 if has_fx(Powerup.ANCHOR) else 1.0
+	var mag := BASE_KNOCK * (1.0 + meter) * power * resist
+	return dir * mag + Vector3.UP * (3.5 + mag * 0.3)
+
+
+## Called on the attacker's machine for the fish it just hit (a remote copy).
+func predict_bonk(dir: Vector3, power: float) -> void:
+	if is_multiplayer_authority() or out or ragdolled or _pred_t > 0.0:
+		return  # i-frames: the real hit would be ignored too
+	flash = 0.25
+	if game:
+		game.burst(global_position + Vector3(0, 1.2, 0), Color("bde0fe") if has_fx(Powerup.BUBBLE) else Color.WHITE, 18)
+	if has_fx(Powerup.BUBBLE):
+		return  # bubble pops, no launch
+	_pred_vel = _knockback(dir, minf(power, MAX_BONK_POWER))
+	_pred_off = Vector3.ZERO
+	_pred_t = PRED_TIME
+
+
+func _update_prediction(delta: float) -> void:
+	var real_arrived := ragdolled or velocity.length() > 4.0
+	if _pred_t > 0.0 and not real_arrived:
+		_pred_t -= delta
+		_pred_vel.y -= gravity * (game.gravity_mult if game else 1.0) * delta
+		_pred_off += _pred_vel * delta
+	else:
+		_pred_t = 0.0
+	# Hand over to the real (synced) motion smoothly instead of snapping.
+	if _pred_t <= 0.0 or real_arrived:
+		_pred_off = _pred_off.lerp(Vector3.ZERO, minf(1.0, delta * 6.0))
+
+
 ## A spectator joined the room: start replicating this fish to them.
 func add_watcher(id: int) -> void:
 	if sync:
@@ -336,6 +382,7 @@ func _hit_check(charge_mult := 1.0) -> void:
 		var kdir := flat / d if d > 0.05 else fwd
 		var power: float = (2.0 if mega else 1.0) * game.knock_mult * fish["power"] * charge_mult * run_bonus
 		p.receive_bonk.rpc_id(p.get_multiplayer_authority(), kdir, power, multiplayer.get_unique_id())
+		p.predict_bonk(kdir, power)   # show the hit now instead of a round trip later
 		shake = maxf(shake, 0.12)
 
 
@@ -362,9 +409,8 @@ func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 		velocity += dir * 3.0
 		_room_rpc("_bonk_fx", [true])
 		return
+	velocity = _knockback(dir, power)
 	var resist := 0.35 if has_fx(Powerup.ANCHOR) else 1.0
-	var mag := BASE_KNOCK * (1.0 + meter) * power * resist
-	velocity = dir * mag + Vector3.UP * (3.5 + mag * 0.3)
 	meter += 0.15 * power * (0.5 if resist < 1.0 else 1.0)
 	stun = clampf(0.7 + meter * 0.3, 0.7, 1.6)
 	ragdolled = true
@@ -434,7 +480,8 @@ func _process(delta: float) -> void:
 	# Other players: glide toward their latest synced position (+ a little prediction from
 	# their velocity) instead of jumping 30 times a second.
 	if not is_multiplayer_authority():
-		var target := net_pos + velocity * (0.5 / SYNC_HZ)
+		_update_prediction(delta)
+		var target := net_pos + velocity * (0.5 / SYNC_HZ) + _pred_off
 		if lite or global_position.distance_to(target) > SNAP_DIST:
 			global_position = target
 		else:
@@ -449,9 +496,10 @@ func _process(delta: float) -> void:
 	walk_t += delta * (3.0 + flat_speed * 1.7)
 
 	# Ragdoll on hit (synced flag, so every peer sees the flop)
-	if ragdolled and not ragdoll.active:
-		ragdoll.start_ragdoll(velocity)
-	elif not ragdolled and ragdoll.active:
+	var floppy := ragdolled or _pred_t > 0.0
+	if floppy and not ragdoll.active:
+		ragdoll.start_ragdoll(_pred_vel if _pred_t > 0.0 and not ragdolled else velocity)
+	elif not floppy and ragdoll.active:
 		ragdoll.stop_ragdoll()
 
 	body.rotation.y = lerp_angle(body.rotation.y, facing, minf(1.0, delta * 18.0))

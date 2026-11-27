@@ -99,6 +99,34 @@ Only the server then runs on Railway.
 
 ---
 
+## Hosting a game on your own PC (low ping for nearby friends)
+
+The desktop app (run from Godot, or an exported Windows build) has **Host Game on This PC**.
+Your PC becomes the server, so you get ~0 ping and friends near you get local ping instead of
+going to Railway's US-West server. Browsers can't host, so the host must use the desktop app.
+
+**One-time setup for internet/website friends:** install Cloudflare's free tunnel tool, `cloudflared`.
+
+```powershell
+winget install --id Cloudflare.cloudflared
+```
+
+(Or put `cloudflared.exe` next to the game / in the project folder.) No Cloudflare account is needed:
+Bonkfish starts a free "quick tunnel" automatically when you host.
+
+**Then:** press **Host Game on This PC**. The room shows:
+- **Website link (anyone):** `https://bonkfish.up.railway.app/?server=xxxx.trycloudflare.com`.
+  Friends open it, type a name, press **Play Online** and land in your room.
+- **Same Wi-Fi (desktop app):** `192.168.x.x:7777`. Friends on your network paste it into
+  the Online box and press **Play Online**.
+
+Notes:
+- Windows may ask to allow Godot through the firewall the first time. Allow it on private networks.
+- The quick-tunnel address changes every time you host, so share the new link each time.
+- Your game ends for everyone when you close it or leave.
+
+---
+
 ## Testing locally before deploying
 
 Run a local dedicated server and connect to it from the editor:

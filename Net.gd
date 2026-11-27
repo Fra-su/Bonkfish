@@ -232,6 +232,119 @@ func _process(delta: float) -> void:
 			_drop(id)
 
 
+# --- Host on this PC (desktop app) ---------------------------------------------------
+# Your PC becomes the game server (WebSocket, port 7777) and you play on it too.
+# - Desktop friends on your network join  ws://<your LAN IP>:7777
+# - Anyone (incl. the website) joins through a Cloudflare quick tunnel, which gives a free
+#   https/wss address. If cloudflared is installed we start it and read the address it prints.
+
+signal tunnel_ready(url: String)
+const WEB_URL := "https://bonkfish.up.railway.app"
+var hosting := false
+var tunnel_url := ""           # e.g. https://abc-def.trycloudflare.com
+var _tunnel_pid := -1
+var _tunnel_thread: Thread
+var _tunnel_pipe: FileAccess
+
+
+func host_online(pname: String) -> bool:
+	var peer := WebSocketMultiplayerPeer.new()
+	peer.inbound_buffer_size = 64 * 1024
+	peer.max_queued_packets = 512
+	peer.handshake_timeout = 5.0
+	if peer.create_server(PORT) != OK:
+		status.emit("Couldn't host - is port %d already in use?" % PORT)
+		return false
+	multiplayer.multiplayer_peer = peer
+	hosting = true
+	_host_setup(pname)
+	_start_tunnel()
+	return true
+
+
+func lan_ip() -> String:
+	for a in IP.get_local_addresses():
+		if a.begins_with("192.168.") or a.begins_with("10.") or a.begins_with("172."):
+			return a
+	return "127.0.0.1"
+
+
+## Link that opens the website straight into this host's game.
+func share_link() -> String:
+	if tunnel_url == "":
+		return ""
+	return "%s/?server=%s" % [WEB_URL, tunnel_url.trim_prefix("https://")]
+
+
+func _find_cloudflared() -> String:
+	# Next to the game, or anywhere on PATH.
+	for p in [OS.get_executable_path().get_base_dir().path_join("cloudflared.exe"),
+			ProjectSettings.globalize_path("res://").path_join("cloudflared.exe")]:
+		if FileAccess.file_exists(p):
+			return p
+	var out := []
+	var cmd := "where" if OS.get_name() == "Windows" else "which"
+	if OS.execute(cmd, ["cloudflared"], out) == 0 and out.size() > 0:
+		var first := String(out[0]).strip_edges().split("\n")[0].strip_edges()
+		if first != "":
+			return first
+	return ""
+
+
+func _start_tunnel() -> void:
+	if OS.has_feature("web"):
+		return
+	var exe := _find_cloudflared()
+	if exe == "":
+		print("cloudflared not found - only LAN players can join (see DEPLOY.md)")
+		return
+	var info := OS.execute_with_pipe(exe, ["tunnel", "--no-autoupdate", "--url", "http://localhost:%d" % PORT], false)
+	if info.is_empty():
+		return
+	_tunnel_pid = info["pid"]
+	_tunnel_pipe = info["stderr"]   # cloudflared prints the address on stderr
+	_tunnel_thread = Thread.new()
+	_tunnel_thread.start(_read_tunnel)
+	status.emit("Opening an internet link for your game...")
+
+
+func _read_tunnel() -> void:
+	var re := RegEx.create_from_string("https://[a-z0-9-]+\\.trycloudflare\\.com")
+	while _tunnel_pipe and _tunnel_pipe.is_open():
+		var line := _tunnel_pipe.get_line()
+		var m := re.search(line)
+		if m:
+			_on_tunnel_url.call_deferred(m.get_string())
+		if _tunnel_pipe.eof_reached():
+			break
+
+
+func _on_tunnel_url(url: String) -> void:
+	if tunnel_url != "":
+		return
+	tunnel_url = url
+	print("Internet link: ", share_link())
+	status.emit("")
+	tunnel_ready.emit(url)
+	players_changed.emit()
+
+
+func _stop_tunnel() -> void:
+	if _tunnel_pid > 0:
+		OS.kill(_tunnel_pid)
+		_tunnel_pid = -1
+	if _tunnel_thread and _tunnel_thread.is_started():
+		_tunnel_thread.wait_to_finish()
+	_tunnel_thread = null
+	_tunnel_pipe = null
+	tunnel_url = ""
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
+		_stop_tunnel()
+
+
 ## LAN host: ENet server + my own room that others drop into.
 func host_game(pname: String) -> bool:
 	var peer := ENetMultiplayerPeer.new()
@@ -291,6 +404,9 @@ func leave() -> void:
 	if steam_ok and lobby_id != 0:
 		steam.leaveLobby(lobby_id)
 	lobby_id = 0
+	if hosting:
+		_stop_tunnel()
+		hosting = false
 	_online_url = ""
 	room = {}
 	players = {}
