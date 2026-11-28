@@ -50,6 +50,7 @@ var ping_label: Label
 var special_hud: Label
 var tile_mats: Array[StandardMaterial3D] = []
 var pad_mat: StandardMaterial3D
+var ramp_mat: StandardMaterial3D
 
 
 var room_code := ""   # set by Net before this node enters the tree (node name is "Room_<code>")
@@ -183,8 +184,11 @@ func _build_environment() -> void:
 	sm.ground_horizon_color = Color("bde0fe")
 	sky.sky_material = sm
 	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color("b9d7ea")
+	env.ambient_light_energy = 0.45   # was the full bright sky: everything washed out to white
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_exposure = 0.9
 	env.fog_enabled = true
 	env.fog_light_color = Color("bde0fe")
 	env.fog_density = 0.006
@@ -194,7 +198,7 @@ func _build_environment() -> void:
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, 35, 0)
-	sun.light_energy = 1.1
+	sun.light_energy = 0.85
 	sun.shadow_enabled = not OS.has_feature("web")   # shadows are expensive in WebGL
 	add_child(sun)
 
@@ -227,12 +231,15 @@ void fragment() {
 	water.position.y = FALL_Y + 1.0
 	add_child(water)
 
+	ramp_mat = StandardMaterial3D.new()
+	ramp_mat.albedo_color = Color("b07d4f")
+	ramp_mat.roughness = 0.9
 	pad_mat = StandardMaterial3D.new()
 	pad_mat.albedo_color = Color("4cd964")
 	pad_mat.emission_enabled = true
 	pad_mat.emission = Color("4cd964")
 	pad_mat.emission_energy_multiplier = 0.4
-	for c in [Color("e9c46a"), Color("d4a373"), Color("f4a261")]:
+	for c in [Color("d9b25c"), Color("c4935f"), Color("8a6b52")]:   # floor, floor alt, raised decks / falling
 		var m := StandardMaterial3D.new()
 		m.albedo_color = c
 		m.roughness = 0.9
@@ -248,8 +255,8 @@ void fragment() {
 # Every peer builds the same map from the map id the server sends. Moving parts are driven
 # by map_t (time since the round began), so they line up on every screen with no extra traffic.
 
-const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones"]
-enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES }
+const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway"]
+enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY }
 const PAD_LAUNCH := 12.0
 ## Physics layer 8: moving tiles players can ride. Only these count as "platforms" for
 ## CharacterBody3D, so rebuilding the map (freeing static tiles) can't fling anyone.
@@ -260,6 +267,7 @@ var map_t := 0.0
 var movers: Array = []      # [{node, kind, base, ...}]  kind: bob / shuttle / sweeper
 var sweepers: Array = []    # [{node, length, height}]
 var pads: Array = []        # tiles that launch you upward
+var ramps: Array = []       # sloped walkways between levels (never drop)
 
 
 func _clear_map() -> void:
@@ -273,6 +281,9 @@ func _clear_map() -> void:
 	movers.clear()
 	sweepers.clear()
 	pads.clear()
+	for r in ramps:
+		r.queue_free()
+	ramps.clear()
 
 
 ## A floor tile. `animated` tiles are AnimatableBody3D so players standing on them ride along.
@@ -303,7 +314,8 @@ func _build_map(id: int, tiny := false) -> void:
 	_clear_map()
 	map_id = id
 	map_t = 0.0
-	# Every map has height to it. Steps are at most 0.9 m (a normal jump clears ~1.5 m).
+	# Flat classics (Dock, Ring, Islands, Cross), height maps (Tiers, Stones) and layered maps
+	# with decks + ramps (Fortress, Skyway) where position actually matters.
 	var n := 6
 	for x in range(-n, n + 1):
 		for z in range(-n, n + 1):
@@ -313,60 +325,105 @@ func _build_map(id: int, tiny := false) -> void:
 			match id:
 				MAP_DOCK:
 					if d <= (8.5 if tiny else 14.0):
-						# raised middle + a few scattered high spots
-						if d < 4.5:
-							p.y += 0.9
-						elif posmod(x * 7 + z * 13, 6) == 0:
-							p.y += 0.6
 						tiles.append(_add_tile(p, mat))
 				MAP_RING:
 					if d > 6.0 and d <= 14.5:
-						# the ring rises and falls in steps as you go around it
-						var sector := posmod(int(floor((atan2(p.x, p.z) + PI) / TAU * 8.0)), 8)
-						p.y += [0.0, 0.6, 1.2, 0.6, 0.0, 0.6, 1.2, 0.6][sector]
 						tiles.append(_add_tile(p, mat))
 				MAP_ISLANDS:
 					var on_a := Vector2(p.x + 10.0, p.z).length() <= 6.0
 					var on_b := Vector2(p.x - 10.0, p.z).length() <= 6.0
-					var bridge := z == 0 and absi(x) <= 1
-					if on_a or on_b or bridge:
-						# one low island, one high island, the bridge climbs between them
-						if on_b:
-							p.y += 1.2
-						elif bridge:
-							p.y += 0.3 + 0.3 * (x + 1)
+					if on_a or on_b or (z == 0 and absi(x) <= 1):
 						tiles.append(_add_tile(p, mat))
 				MAP_CROSS:
 					if absi(x) <= 1 or absi(z) <= 1:
-						# the arms climb toward a high middle (guarded by the sweeper)
-						var far := maxi(absi(x), absi(z))
-						p.y += maxf(0.0, 2.4 - 0.6 * far)
 						tiles.append(_add_tile(p, mat))
 				MAP_TIERS:
 					if d <= 14.0:
 						p.y += 2.7 if d < 5.0 else (1.8 if d < 8.5 else (0.9 if d < 11.5 else 0.0))
 						var t := _add_tile(p, mat)
 						tiles.append(t)
-						if d >= 11.5 and (x == 0 or z == 0):   # bounce pads on the outer ring
-							t.get_meta("mesh").material_override = pad_mat
-							pads.append(t)
+						if d >= 11.5 and (x == 0 or z == 0):
+							_make_pad(t)
 				MAP_STONES:
 					if d <= 14.5 and (x + z) % 2 == 0:
-						p.y += 0.5 * posmod(x * 5 + z * 3, 3)   # stones at three heights
+						p.y += 0.5 * posmod(x * 5 + z * 3, 3)
 						var s := _add_tile(p, mat, 2.3, true)
 						tiles.append(s)
 						movers.append({"node": s, "kind": "bob", "base": p,
 							"amp": 0.45, "speed": 1.2, "phase": float(x * 7 + z * 3)})
+				MAP_FORTRESS, MAP_SKYWAY:
+					if absi(x) <= 5 and absi(z) <= 5:   # big flat ground floor
+						tiles.append(_add_tile(p, mat))
 	match id:
 		MAP_RING:
-			_add_sweeper(14.5, 1.5, 0.7)
+			_add_sweeper(14.5, 0.9, 0.7)
 		MAP_CROSS:
-			_add_sweeper(9.5, 3.0, 1.0)   # high up: only sweeps the raised middle
+			_add_sweeper(9.5, 0.9, 1.0)
 		MAP_ISLANDS:
-			var base := Vector3(0, 0.2, 9.0)
+			var base := Vector3(0, -0.4, 9.0)
 			var shuttle := _add_tile(base, tile_mats[2], TILE - 0.08, true)
 			movers.append({"node": shuttle, "kind": "shuttle", "base": base,
-				"axis": Vector3(10.0, 0.6, 0), "speed": 0.4})   # rises toward the high island
+				"axis": Vector3(10.0, 0, 0), "speed": 0.4})
+		MAP_FORTRESS:
+			# Central deck 3 m up (you can walk underneath), two ramps up to it.
+			_add_deck(-1, 1, -1, 1, 3.0)
+			_add_ramp(Vector3(0, 0, 13.5), Vector3(0, 3.0, 4.5))
+			_add_ramp(Vector3(0, 0, -13.5), Vector3(0, 3.0, -4.5))
+			# Corner towers 4.5 m up, only reachable with the bounce pad next to each one.
+			for sx in [-1, 1]:
+				for sz in [-1, 1]:
+					_add_deck(4 * sx, 4 * sx, 4 * sz, 4 * sz, 4.5)
+					for t in tiles:
+						if is_equal_approx(t.position.x, 3 * TILE * sx) and is_equal_approx(t.position.z, 4 * TILE * sz) \
+								and t.position.y < 0.0:
+							_make_pad(t)
+		MAP_SKYWAY:
+			# Two mirrored towers: a mid deck (2.4 m) with a high deck (4.8 m) stacked over part of it.
+			for s in [-1, 1]:
+				var lo := Vector2i(-5, -5) if s < 0 else Vector2i(1, 2)
+				var hi := Vector2i(-1, -2) if s < 0 else Vector2i(5, 5)
+				_add_deck(lo.x, hi.x, lo.y, hi.y, 2.4)                       # mid deck
+				var hx := Vector2i(-5, -3) if s < 0 else Vector2i(3, 5)
+				var hz := Vector2i(-5, -4) if s < 0 else Vector2i(4, 5)
+				_add_deck(hx.x, hx.y, hz.x, hz.y, 4.8)                       # high deck above it
+				# ground -> mid deck, along X (reaches the deck's inner edge)
+				_add_ramp(Vector3(-3.0 * s, 0, 6.0 * s), Vector3(1.5 * s, 2.4, 6.0 * s))
+				# mid deck -> high deck, along Z (reaches the high deck's front edge)
+				_add_ramp(Vector3(12.0 * s, 2.4, 6.0 * s), Vector3(12.0 * s, 4.8, 10.5 * s))
+
+
+func _make_pad(t: Node3D) -> void:
+	t.get_meta("mesh").material_override = pad_mat
+	pads.append(t)
+
+
+## A raised deck of tiles (grid index ranges, inclusive) with its top at `top` metres.
+func _add_deck(x0: int, x1: int, z0: int, z1: int, top: float) -> void:
+	for x in range(mini(x0, x1), maxi(x0, x1) + 1):
+		for z in range(mini(z0, z1), maxi(z0, z1) + 1):
+			tiles.append(_add_tile(Vector3(x * TILE, top - 0.4, z * TILE), tile_mats[2]))
+
+
+## A walkable slope from `low` to `high` (positions of the walking surface).
+func _add_ramp(low: Vector3, high: Vector3, width := TILE - 0.08) -> void:
+	var body := StaticBody3D.new()
+	var length := low.distance_to(high)
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(width, 0.4, length + 0.3)
+	cs.shape = box
+	body.add_child(cs)
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = box.size
+	mi.mesh = bm
+	mi.material_override = ramp_mat
+	body.add_child(mi)
+	add_child(body)
+	# Surface is the top of the box, so sink it by half its thickness.
+	body.global_position = (low + high) * 0.5 + Vector3(0, -0.2, 0)
+	body.look_at(body.global_position + (high - low), Vector3.UP)
+	ramps.append(body)
 
 
 ## A spinning bar over the center that knocks fish off (a hazard, not a solid wall).

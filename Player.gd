@@ -442,12 +442,14 @@ func _hit_check(charge_mult := 1.0, hit_ids := {}) -> void:
 		if game.is_teams() and p.team == team:
 			continue  # no friendly fire
 		var to: Vector3 = p.global_position - global_position
-		if absf(to.y) > 2.2:
+		if absf(to.y) > 2.6:   # can reach a little up/down a ledge, not across decks
 			continue
 		var flat := Vector3(to.x, 0, to.z)
 		var d := flat.length()
 		var kdir := flat / d if d > 0.05 else fwd
 		var power := base
+		# High ground: hitting down at someone is up to +35%, hitting up at them down to -20%.
+		power *= clampf(1.0 + (global_position.y - p.global_position.y) * 0.15, 0.8, 1.35)
 		var in_cone := d <= reach and (d <= 0.7 or fwd.dot(flat / d) >= 0.3)
 		if not in_cone:
 			if shockwave and d <= 3.8:
