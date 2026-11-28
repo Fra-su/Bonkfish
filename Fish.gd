@@ -16,6 +16,17 @@ const LINEUP := [
 		"reach": 1.1, "power": 1.15, "cooldown": 0.6, "speed": 0.95, "length": 1.0},
 	{"name": "Anglerfish", "mesh": "res://Fish/OBJ/Anglerfish.obj", "desc": "Stronger while running",
 		"reach": 1.0, "power": 0.9, "cooldown": 0.55, "speed": 1.05, "length": 0.85},
+	# Higher-level unlocks (sidegrades, not upgrades)
+	{"name": "Goldfish", "mesh": "res://Fish/OBJ/Goldfish.obj", "desc": "Light and quick",
+		"reach": 0.9, "power": 0.85, "cooldown": 0.38, "speed": 1.12, "length": 0.75},
+	{"name": "Piranha", "mesh": "res://Fish/OBJ/Piranha.obj", "desc": "Short reach, fast strong hits",
+		"reach": 0.7, "power": 1.2, "cooldown": 0.4, "speed": 1.0, "length": 0.6},
+	{"name": "Blobfish", "mesh": "res://Fish/OBJ/Blobfish.obj", "desc": "Very strong, very slow",
+		"reach": 0.85, "power": 1.7, "cooldown": 0.95, "speed": 0.8, "length": 0.75},
+	{"name": "Lionfish", "mesh": "res://Fish/OBJ/Lionfish.obj", "desc": "Good reach and power, slower feet",
+		"reach": 1.2, "power": 1.1, "cooldown": 0.6, "speed": 0.92, "length": 1.0},
+	{"name": "Goblin Shark", "mesh": "res://Fish/OBJ/GoblinShark.obj", "desc": "Long reach, strong, slow swing",
+		"reach": 1.35, "power": 1.25, "cooldown": 0.85, "speed": 0.88, "length": 1.15},
 ]
 
 static var _cache := {}

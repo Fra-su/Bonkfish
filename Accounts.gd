@@ -10,9 +10,24 @@ const MAX_TOKENS := 5
 const NAME_RE := "^[A-Za-z0-9_]{3,14}$"
 
 # --- progression -------------------------------------------------------------
-const MAX_LEVEL := 30
+const MAX_LEVEL := 50
 ## Fish index (Fish.LINEUP order) -> level that unlocks it.
-const FISH_UNLOCK := {0: 1, 5: 1, 1: 2, 2: 3, 4: 4, 3: 6, 6: 8}  # Koi, Tuna | Sword, Puffer, Tetra, Shark, Angler
+const FISH_UNLOCK := {0: 1, 5: 1, 1: 2, 2: 3, 4: 4, 3: 6, 6: 8,   # Koi, Tuna | Sword, Puffer, Tetra, Shark, Angler
+	7: 10, 8: 12, 9: 14, 10: 17, 11: 20}   # Goldfish, Piranha, Blobfish, Lionfish, Goblin Shark
+
+## Fish colour skins (cosmetic). index -> {name, level, color}; color alpha = tint strength.
+const SKINS := [
+	{"name": "Natural", "level": 1, "color": Color(1, 1, 1, 0)},
+	{"name": "Gold", "level": 5, "color": Color(1.0, 0.78, 0.2, 0.6)},
+	{"name": "Ruby", "level": 9, "color": Color(0.85, 0.1, 0.2, 0.6)},
+	{"name": "Ocean", "level": 13, "color": Color(0.1, 0.45, 0.95, 0.6)},
+	{"name": "Mint", "level": 16, "color": Color(0.3, 0.95, 0.6, 0.55)},
+	{"name": "Shadow", "level": 22, "color": Color(0.05, 0.05, 0.08, 0.75)},
+	{"name": "Pearl", "level": 28, "color": Color(1.0, 0.97, 0.92, 0.7)},
+	{"name": "Toxic", "level": 35, "color": Color(0.6, 1.0, 0.1, 0.65)},
+]
+const XP_DAILY_WIN := 100   # first match win of the day (UTC)
+const STAT_KEYS := ["matches", "wins", "rounds", "kos", "falls"]
 const XP_ROUND := 10
 const XP_KNOCKOUT := 15
 const XP_ROUND_WIN := 25
@@ -168,9 +183,47 @@ func add_xp(key: String, amount: int) -> Array:
 func profile(key: String) -> Dictionary:
 	if not users.has(key):
 		return {}
-	var xp: int = users[key]["xp"]
+	var u: Dictionary = users[key]
+	var xp: int = u["xp"]
 	var p := level_progress(xp)
-	return {"name": users[key]["name"], "xp": xp, "level": level_for(xp), "into": p[0], "need": p[1]}
+	return {"name": u["name"], "xp": xp, "level": level_for(xp), "into": p[0], "need": p[1],
+		"skin": int(u.get("skin", 0)), "stats": u.get("stats", {}),
+		"daily_ready": u.get("last_daily", "") != _today()}
+
+
+static func skin_unlocked(skin: int, level: int) -> bool:
+	return skin >= 0 and skin < SKINS.size() and level >= SKINS[skin]["level"]
+
+
+func add_stat(key: String, stat: String, n := 1) -> void:
+	if not users.has(key) or not stat in STAT_KEYS:
+		return
+	if not users[key].has("stats"):
+		users[key]["stats"] = {}
+	users[key]["stats"][stat] = int(users[key]["stats"].get(stat, 0)) + n
+	_dirty = true
+
+
+## Returns true if the skin was allowed and saved.
+func set_skin(key: String, skin: int) -> bool:
+	if not users.has(key) or not skin_unlocked(skin, level_for(users[key]["xp"])):
+		return false
+	users[key]["skin"] = skin
+	_dirty = true
+	return true
+
+
+func _today() -> String:
+	return Time.get_date_string_from_system(true)   # UTC date
+
+
+## First match win of the day: returns true once per UTC day (and marks it used).
+func claim_daily(key: String) -> bool:
+	if not users.has(key) or users[key].get("last_daily", "") == _today():
+		return false
+	users[key]["last_daily"] = _today()
+	_dirty = true
+	return true
 
 
 func is_taken(name: String) -> bool:

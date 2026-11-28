@@ -638,7 +638,7 @@ func _join(id: int, code: String) -> void:
 		_leave(id)
 	r["joined"] += 1
 	r["players"][id] = {"name": peer_names.get(id, "Fish"), "color": Color.WHITE, "score": 0,
-		"fish": 0, "team": _smaller_team(r), "joined": r["joined"], "level": _peer_level(id)}
+		"fish": 0, "team": _smaller_team(r), "joined": r["joined"], "level": _peer_level(id), "skin": _peer_skin(id)}
 	peer_room[id] = code
 	_recolor(r)
 	_push(code)
@@ -1106,6 +1106,7 @@ func _refresh_member(id: int) -> void:
 		return
 	r["players"][id]["name"] = peer_names.get(id, "Fish")
 	r["players"][id]["level"] = _peer_level(id)
+	r["players"][id]["skin"] = _peer_skin(id)
 	_push(r["code"])
 
 
@@ -1147,17 +1148,53 @@ func _s_logout(token: String) -> void:
 	_refresh_member(id)
 
 
+func _peer_skin(id: int) -> int:
+	if accounts and peer_account.has(id):
+		return accounts.profile(peer_account[id]).get("skin", 0)
+	return 0
+
+
+## Called by a room's Game (server): count a stat (matches, wins, rounds, kos, falls).
+func add_stat(id: int, stat: String, n := 1) -> void:
+	if accounts and peer_account.has(id):
+		accounts.add_stat(peer_account[id], stat, n)
+
+
+func choose_skin(i: int) -> void: _to_server("_s_skin", [i])
+
+
+@rpc("any_peer", "reliable")
+func _s_skin(i: int) -> void:
+	var id := _sender()
+	if accounts == null or not _ok(id) or not peer_account.has(id):
+		return
+	var r := _member_room(id)
+	if not r.is_empty() and r["in_game"]:
+		return
+	if not accounts.set_skin(peer_account[id], i):
+		_to_peer(id, "_c_error", ["That skin is locked."])
+		return
+	_to_peer(id, "_c_auth", [true, accounts.profile(peer_account[id]), "", ""])
+	_refresh_member(id)
+
+
 ## Called by a room's Game (server). No-op for guests and servers without accounts.
 func add_xp(id: int, amount: int, reason: String) -> void:
 	if accounts == null or not peer_account.has(id) or amount <= 0:
 		return
+	if reason == "match win" and accounts.claim_daily(peer_account[id]):
+		amount += AccountsScript.XP_DAILY_WIN
+		reason = "match win + first win today"
 	var res: Array = accounts.add_xp(peer_account[id], amount)
-	var unlocked := []
+	var unlocked := []   # names of anything this level-up unlocked
 	if res[1] > res[0]:
 		for fish in AccountsScript.FISH_UNLOCK:
 			var need: int = AccountsScript.FISH_UNLOCK[fish]
 			if need > res[0] and need <= res[1]:
-				unlocked.append(fish)
+				unlocked.append(preload("res://Fish.gd").stats(fish)["name"])
+		for s in AccountsScript.SKINS:
+			if s["level"] > res[0] and s["level"] <= res[1]:
+				unlocked.append("%s skin" % s["name"])
 		_refresh_member(id)
 	_to_peer(id, "_c_xp", [amount, reason, accounts.profile(peer_account[id]), unlocked])
 

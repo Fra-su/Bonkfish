@@ -311,8 +311,7 @@ func pname(id: int) -> String:
 func _on_xp(amount: int, reason: String, unlocked: Array) -> void:
 	add_feed("+%d XP (%s)" % [amount, reason])
 	if not unlocked.is_empty():
-		var names := unlocked.map(func(f): return Fish.stats(f)["name"])
-		show_banner("", "Level %d - unlocked %s" % [Net.account.get("level", 1), ", ".join(names)], 3.0)
+		show_banner("", "Level %d - unlocked %s" % [Net.account.get("level", 1), ", ".join(unlocked)], 3.0)
 
 
 func _on_net_player_left(code: String, id: int) -> void:
@@ -559,8 +558,11 @@ func report_fall(hitter: int) -> void:
 	if state != "fight" or not alive.has(id) or not Net.allow(id):
 		return
 	alive.erase(id)
-	if started_with > 1 and hitter != id and members().has(hitter):
-		Net.add_xp(hitter, Net.AccountsScript.XP_KNOCKOUT, "knockout")
+	if started_with > 1:
+		Net.add_stat(id, "falls")
+		if hitter != id and members().has(hitter):
+			Net.add_stat(hitter, "kos")
+			Net.add_xp(hitter, Net.AccountsScript.XP_KNOCKOUT, "knockout")
 	bc("_player_out", [id, hitter])
 	_check_end()
 
@@ -617,7 +619,12 @@ func _check_end() -> void:
 		for id in members():
 			var xp: int = A.XP_ROUND
 			var why := "round"
+			if match_done:
+				Net.add_stat(id, "matches")
 			if id in scorers:
+				Net.add_stat(id, "rounds")
+				if match_done:
+					Net.add_stat(id, "wins")
 				xp += A.XP_ROUND_WIN
 				why = "round win"
 				if match_done:

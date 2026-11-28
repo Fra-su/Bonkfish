@@ -38,6 +38,7 @@ var charge := 0.0       # 0 = not charging, else seconds held (bonk wind-up)
 var fish_id := 0
 var team := 0
 var level := 0           # account level (0 = guest / no accounts)
+var skin := 0            # fish colour skin (Accounts.SKINS index)
 var sync: MultiplayerSynchronizer
 var _last_bonk_from := {}            # attacker id -> time (anti-spam)
 const MAX_BONK_POWER := 16.0         # biggest legit power (mega x mega-bonks x heavy fish x charge x run)
@@ -152,6 +153,7 @@ func _ready() -> void:
 	team = info.get("team", 0)
 	fish_id = info.get("fish", 0)
 	level = info.get("level", 0)
+	skin = info.get("skin", 0)
 
 	# A dedicated server never draws anything: skip the skeleton, ragdoll, meshes and labels.
 	lite = Net.dedicated
@@ -605,9 +607,17 @@ func _build_visuals() -> void:
 	hand_fish.basis = hold["basis"].scaled(Vector3.ONE * fish_base_scale)
 	_place_fish_grip()
 	hand.add_child(hand_fish)
+	var tint: Color = preload("res://Accounts.gd").SKINS[clampi(skin, 0, preload("res://Accounts.gd").SKINS.size() - 1)]["color"]
+	var skin_mat: StandardMaterial3D = null
+	if tint.a > 0.0:
+		skin_mat = StandardMaterial3D.new()
+		skin_mat.albedo_color = tint
+		skin_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		hand_fish.material_overlay = skin_mat
 	# First-person view model uses the same fish (pack shares Koi's orientation).
 	var fp_mesh: MeshInstance3D = $Head/Camera3D/FishItem/FishMesh
 	fp_mesh.mesh = hold["mesh"]
+	fp_mesh.material_overlay = skin_mat
 	fp_mesh.basis = fp_mesh.basis.scaled(Vector3.ONE * (KOI_LEN / hold["len"]) * (fish["length"] / 0.9))
 
 	bubble = MeshInstance3D.new()

@@ -15,6 +15,10 @@ var user_edit: LineEdit
 var pass_edit: LineEdit
 var logout_btn: Button
 var fish_preview := -1
+var skin_preview := -1
+var stats_label: Label
+var skin_row: HBoxContainer
+var skin_label: Label
 
 # --- menu (not connected) ---
 var menu_panel: PanelContainer
@@ -330,6 +334,14 @@ func _build_lobby(col: VBoxContainer) -> void:
 	right.add_child(pick)
 	fish_stats = _small("")
 	right.add_child(fish_stats)
+	skin_row = HBoxContainer.new()
+	skin_row.add_theme_constant_override("separation", 10)
+	skin_row.add_child(_button("<", func(): _cycle_skin(-1)))
+	skin_label = Label.new()
+	skin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	skin_row.add_child(_expand(skin_label))
+	skin_row.add_child(_button(">", func(): _cycle_skin(1)))
+	right.add_child(skin_row)
 	right.add_child(HSeparator.new())
 	right.add_child(_small("Chat"))
 	chat_scroll = ScrollContainer.new()
@@ -514,12 +526,21 @@ func _cycle_fish(d: int) -> void:
 	_refresh_lobby()
 
 
+func _cycle_skin(d: int) -> void:
+	skin_preview = posmod((skin_preview if skin_preview >= 0 else Net.account.get("skin", 0)) + d, Accounts.SKINS.size())
+	if Accounts.skin_unlocked(skin_preview, Net.my_level()):
+		Net.choose_skin(skin_preview)
+	_refresh_lobby()
+
+
 func _build_account(v: VBoxContainer) -> void:
 	account_box = VBoxContainer.new()
 	account_box.add_theme_constant_override("separation", 6)
 	v.add_child(account_box)
 	account_label = _small("")
 	account_box.add_child(account_label)
+	stats_label = _small("")
+	account_box.add_child(stats_label)
 	login_row = HBoxContainer.new()
 	login_row.add_theme_constant_override("separation", 8)
 	user_edit = LineEdit.new()
@@ -561,8 +582,13 @@ func _refresh_account() -> void:
 	var a := Net.account
 	if a.is_empty():
 		account_label.text = "Playing as a guest. Log in to earn XP and unlock fish."
+		stats_label.text = ""
 	else:
 		account_label.text = "Logged in as %s - level %d (%d/%d XP)" % [a["name"], a["level"], a["into"], a["need"]]
+		var s: Dictionary = a.get("stats", {})
+		stats_label.text = "%d matches, %d wins, %d rounds won, %d knockouts, %d falls.%s" % [
+			s.get("matches", 0), s.get("wins", 0), s.get("rounds", 0), s.get("kos", 0), s.get("falls", 0),
+			"  First win of the day: +%d XP." % Accounts.XP_DAILY_WIN if a.get("daily_ready", false) else ""]
 	login_row.visible = a.is_empty()
 	logout_btn.visible = not a.is_empty()
 
@@ -701,6 +727,14 @@ func _refresh_lobby() -> void:
 	# Fish
 	if fish_preview < 0 or Accounts.fish_unlocked(fish_preview, Net.my_level()):
 		fish_preview = _my_fish()
+	# Skin (accounts only)
+	skin_row.visible = Net.is_logged_in()
+	if Net.is_logged_in():
+		if skin_preview < 0 or Accounts.skin_unlocked(skin_preview, Net.my_level()):
+			skin_preview = Net.account.get("skin", 0)
+		var sk: Dictionary = Accounts.SKINS[skin_preview]
+		skin_label.text = "Skin: %s%s" % [sk["name"], "" if Accounts.skin_unlocked(skin_preview, Net.my_level())
+			else " (level %d)" % sk["level"]]
 	var fs := Fish.stats(fish_preview)
 	var locked := not Accounts.fish_unlocked(fish_preview, Net.my_level())
 	fish_label.text = fs["name"] + (" (locked)" if locked else "")
