@@ -175,6 +175,9 @@ func _ready() -> void:
 	lite = Net.dedicated
 	collision_layer = 2      # players
 	collision_mask = 1 | 2   # dock + other players (not ragdoll limbs)
+	# Only moving tiles (Game.RIDE_LAYER) carry you; don't keep their speed after stepping off.
+	platform_floor_layers = 1 << 7
+	platform_on_leave = CharacterBody3D.PLATFORM_ON_LEAVE_DO_NOTHING
 	fish = Fish.stats(fish_id)
 	if not lite:
 		_build_visuals()
@@ -337,11 +340,18 @@ func _physics_process(delta: float) -> void:
 	facing = head.rotation.y
 	net_pos = global_position
 
-	# Rogue boat
+	# Rogue boat + map hazards
 	if game and stun <= 0.0 and game.state == "fight":
 		var bd: Vector3 = game.boat_hit(global_position)
 		if bd != Vector3.ZERO:
 			receive_bonk(bd, 1.7, 0)
+		var sw: Vector3 = game.sweeper_hit(global_position)
+		if sw != Vector3.ZERO:
+			receive_bonk(sw, 1.3, 0)
+	# Bounce pads (Tiers map)
+	if game and is_on_floor() and velocity.y <= 0.1 and game.on_pad(global_position):
+		velocity.y = game.PAD_LAUNCH
+		jumps = 1
 
 	if global_position.y < Game_FALL_Y():
 		if game and game.state == "fight":
@@ -726,6 +736,9 @@ func _build_visuals() -> void:
 	ragdoll.skin_mesh.material_overlay = overlay
 	collision_layer = 2      # players
 	collision_mask = 1 | 2   # dock + other players (not ragdoll limbs)
+	# Only moving tiles (Game.RIDE_LAYER) carry you; don't keep their speed after stepping off.
+	platform_floor_layers = 1 << 7
+	platform_on_leave = CharacterBody3D.PLATFORM_ON_LEAVE_DO_NOTHING
 
 	# Fish hand rides the arm bone, so it flops with the ragdoll.
 	var attach := BoneAttachment3D.new()

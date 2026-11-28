@@ -24,7 +24,7 @@ var friction := 1.0
 var knock_mult := 1.0
 var state := "waiting"        # waiting / countdown / fight / over
 
-var tiles: Array[StaticBody3D] = []
+var tiles: Array[Node3D] = []   # static tiles + moving ones (AnimatableBody3D)
 var players_node: Node3D
 var powerups := {}            # pid -> Powerup node
 var next_pid := 0
@@ -49,6 +49,7 @@ var end_btn: Button
 var ping_label: Label
 var special_hud: Label
 var tile_mats: Array[StandardMaterial3D] = []
+var pad_mat: StandardMaterial3D
 
 
 var room_code := ""   # set by Net before this node enters the tree (node name is "Room_<code>")
@@ -103,7 +104,7 @@ func _ready() -> void:
 		_spawn_player(id)
 	Net.player_left.connect(_on_net_player_left)
 	Net.xp_gained.connect(_on_xp)
-	_build_tiles(10.5)
+	_build_map(MAP_DOCK)
 	free_cam = preload("res://SpecCam.gd").new()
 	free_cam.game = self
 	add_child(free_cam)
@@ -135,14 +136,15 @@ func _watcher_ready() -> void:
 	var pus := []
 	for pid in powerups:
 		pus.append([pid, powerups[pid].type, powerups[pid].position])
-	_snapshot.rpc_id(id, modifier, state, round_num, dropped, pus)
+	_snapshot.rpc_id(id, modifier, state, round_num, dropped, pus, map_id, map_t)
 	bc("_add_watcher", [id])
 
 
 @rpc("authority", "reliable")
-func _snapshot(m: int, st: String, rn: int, drop: Array, pus: Array) -> void:
+func _snapshot(m: int, st: String, rn: int, drop: Array, pus: Array, map := 0, mt := 0.0) -> void:
 	_apply_modifier(m)
-	_build_tiles(6.5 if m == TINY else 10.5)
+	_build_map(map, m == TINY)
+	map_t = mt
 	for i in drop:
 		if i >= 0 and i < tiles.size():
 			tiles[i].set_meta("dropping", true)
@@ -225,6 +227,11 @@ void fragment() {
 	water.position.y = FALL_Y + 1.0
 	add_child(water)
 
+	pad_mat = StandardMaterial3D.new()
+	pad_mat.albedo_color = Color("4cd964")
+	pad_mat.emission_enabled = true
+	pad_mat.emission = Color("4cd964")
+	pad_mat.emission_energy_multiplier = 0.4
 	for c in [Color("e9c46a"), Color("d4a373"), Color("f4a261")]:
 		var m := StandardMaterial3D.new()
 		m.albedo_color = c
@@ -237,47 +244,200 @@ void fragment() {
 	spectator_cam.look_at(Vector3.ZERO)
 
 
-func _build_tiles(radius: float) -> void:
+# --- maps --------------------------------------------------------------------------
+# Every peer builds the same map from the map id the server sends. Moving parts are driven
+# by map_t (time since the round began), so they line up on every screen with no extra traffic.
+
+const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones"]
+enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES }
+const PAD_LAUNCH := 12.0
+## Physics layer 8: moving tiles players can ride. Only these count as "platforms" for
+## CharacterBody3D, so rebuilding the map (freeing static tiles) can't fling anyone.
+const RIDE_LAYER := 1 << 7
+
+var map_id := MAP_DOCK
+var map_t := 0.0
+var movers: Array = []      # [{node, kind, base, ...}]  kind: bob / shuttle / sweeper
+var sweepers: Array = []    # [{node, length, height}]
+var pads: Array = []        # tiles that launch you upward
+
+
+func _clear_map() -> void:
 	for t in tiles:
 		t.queue_free()
 	tiles.clear()
 	dropped.clear()
+	for m in movers:
+		if is_instance_valid(m["node"]) and not m["node"] in tiles:
+			m["node"].queue_free()
+	movers.clear()
+	sweepers.clear()
+	pads.clear()
+
+
+## A floor tile. `animated` tiles are AnimatableBody3D so players standing on them ride along.
+func _add_tile(pos: Vector3, mat: Material, size := TILE - 0.08, animated := false) -> Node3D:
+	var body: PhysicsBody3D = AnimatableBody3D.new() if animated else StaticBody3D.new()
+	if animated:
+		(body as AnimatableBody3D).sync_to_physics = true
+		body.collision_layer = 1 | RIDE_LAYER   # players only ride bodies on this layer
+	body.position = pos
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(size, 0.8, size)
+	cs.shape = box
+	body.add_child(cs)
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = box.size
+	mi.mesh = bm
+	mi.material_override = mat
+	body.add_child(mi)
+	body.set_meta("cs", cs)
+	body.set_meta("mesh", mi)
+	add_child(body)
+	return body
+
+
+func _build_map(id: int, tiny := false) -> void:
+	_clear_map()
+	map_id = id
+	map_t = 0.0
 	var n := 4
 	for x in range(-n, n + 1):
 		for z in range(-n, n + 1):
-			var pos := Vector3(x * TILE, -0.4, z * TILE)
-			if Vector2(pos.x, pos.z).length() > radius:
-				continue
-			var body := StaticBody3D.new()
-			body.position = pos
-			var cs := CollisionShape3D.new()
-			var box := BoxShape3D.new()
-			box.size = Vector3(TILE - 0.08, 0.8, TILE - 0.08)
-			cs.shape = box
-			body.add_child(cs)
-			var mi := MeshInstance3D.new()
-			var bm := BoxMesh.new()
-			bm.size = box.size
-			mi.mesh = bm
-			mi.material_override = tile_mats[(x + z + 100) % 2]
-			body.add_child(mi)
-			body.set_meta("cs", cs)
-			body.set_meta("mesh", mi)
-			add_child(body)
-			tiles.append(body)
+			var p := Vector3(x * TILE, -0.4, z * TILE)
+			var d := Vector2(p.x, p.z).length()
+			var mat: Material = tile_mats[(x + z + 100) % 2]
+			match id:
+				MAP_DOCK:
+					if d <= (6.5 if tiny else 10.5):
+						tiles.append(_add_tile(p, mat))
+				MAP_RING:
+					if d > 4.5 and d <= 11.0:
+						tiles.append(_add_tile(p, mat))
+				MAP_ISLANDS:
+					var on_a := Vector2(p.x + 7.5, p.z).length() <= 4.6
+					var on_b := Vector2(p.x - 7.5, p.z).length() <= 4.6
+					if on_a or on_b or (x == 0 and z == 0):   # two islands + one-tile bridge
+						tiles.append(_add_tile(p, mat))
+				MAP_CROSS:
+					if absi(x) <= 1 or absi(z) <= 1:
+						tiles.append(_add_tile(p, mat))
+				MAP_TIERS:
+					if d <= 10.5:
+						p.y += 1.8 if d < 4.0 else (0.9 if d < 7.5 else 0.0)
+						var t := _add_tile(p, mat)
+						tiles.append(t)
+						if d >= 7.5 and (x == 0 or z == 0):   # bounce pads on the outer ring
+							t.get_meta("mesh").material_override = pad_mat
+							pads.append(t)
+				MAP_STONES:
+					if d <= 11.0 and (x + z) % 2 == 0:
+						var s := _add_tile(p, mat, 2.3, true)
+						tiles.append(s)
+						movers.append({"node": s, "kind": "bob", "base": p,
+							"amp": 0.45, "speed": 1.2, "phase": float(x * 7 + z * 3)})
+	match id:
+		MAP_RING:
+			_add_sweeper(11.0, 0.9, 0.8)
+		MAP_CROSS:
+			_add_sweeper(7.5, 0.9, 1.0)
+		MAP_ISLANDS:
+			var shuttle := _add_tile(Vector3(0, -0.4, 6.0), tile_mats[2], TILE - 0.08, true)
+			movers.append({"node": shuttle, "kind": "shuttle", "base": Vector3(0, -0.4, 6.0),
+				"axis": Vector3(7.5, 0, 0), "speed": 0.45})
+
+
+## A spinning bar over the center that knocks fish off (a hazard, not a solid wall).
+func _add_sweeper(length: float, height: float, speed: float) -> void:
+	var pivot := Node3D.new()
+	pivot.position = Vector3(0, height, 0)
+	add_child(pivot)
+	var bar := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(length * 2.0, 0.35, 0.35)
+	bar.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("c0392b")
+	bar.material_override = mat
+	pivot.add_child(bar)
+	var hub := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.5
+	cm.bottom_radius = 0.6
+	cm.height = height + 0.6
+	hub.mesh = cm
+	hub.material_override = mat
+	hub.position.y = -height * 0.5
+	pivot.add_child(hub)
+	movers.append({"node": pivot, "kind": "sweeper", "speed": speed})
+	sweepers.append({"node": pivot, "length": length, "height": height})
+
+
+func _physics_process(delta: float) -> void:
+	if state == "waiting":
+		return
+	map_t += delta
+	for m in movers:
+		var node: Node3D = m["node"]
+		if not is_instance_valid(node) or node.has_meta("dropping"):
+			continue
+		match m["kind"]:
+			"bob":
+				node.position.y = m["base"].y + sin(map_t * m["speed"] + m["phase"]) * m["amp"]
+			"shuttle":
+				node.position = m["base"] + m["axis"] * sin(map_t * m["speed"])
+			"sweeper":
+				node.rotation.y = map_t * m["speed"]
+
+
+## Called by the local player's physics: knock direction if a sweeper arm hits us, else ZERO.
+func sweeper_hit(pos: Vector3) -> Vector3:
+	for s in sweepers:
+		var piv: Node3D = s["node"]
+		var arm: Vector3 = piv.global_basis.x
+		var rel := pos - piv.global_position
+		var along := rel.dot(arm)
+		if absf(along) > s["length"] or rel.y < -1.4 or rel.y > 0.6:
+			continue
+		var side := rel - arm * along
+		side.y = 0.0
+		if side.length() < 0.75:
+			# Push the way the arm is sweeping (it spins counter-clockwise seen from above).
+			var sweep_dir := Vector3.UP.cross(arm) * signf(along if along != 0.0 else 1.0)
+			return (sweep_dir + Vector3(rel.x, 0, rel.z).normalized() * 0.4).normalized()
+	return Vector3.ZERO
+
+
+## True if the position is standing on a bounce pad.
+func on_pad(pos: Vector3) -> bool:
+	for t in pads:
+		if t.has_meta("dropping"):
+			continue
+		var rel: Vector3 = pos - t.global_position
+		if absf(rel.x) < TILE * 0.5 and absf(rel.z) < TILE * 0.5 and rel.y > 0.2 and rel.y < 0.8:
+			return true
+	return false
 
 
 func standing_tiles() -> Array:
 	return tiles.filter(func(t): return not t.has_meta("dropping"))
 
 
+## Spawns spread evenly (by angle) over the map's fixed tiles. Same on every peer.
 func spawn_point(id: int) -> Vector3:
 	var ids := members()
 	ids.sort()
 	var i := maxi(ids.find(id), 0)
-	var r := 3.5 if modifier == TINY else 6.0
-	var a := TAU * i / maxf(ids.size(), 1)
-	return Vector3(sin(a) * r, 1.5, cos(a) * r)
+	var spots: Array = tiles.filter(func(t): return t is StaticBody3D and not t in pads)
+	if spots.is_empty():
+		spots = tiles
+	if spots.is_empty():
+		return Vector3(0, 2, 0)
+	spots.sort_custom(func(a, b): return atan2(a.position.x, a.position.z) < atan2(b.position.x, b.position.z))
+	var pick: Node3D = spots[int(float(i) / maxf(ids.size(), 1) * spots.size()) % spots.size()]
+	return pick.position + Vector3(0, 1.9, 0)
 
 
 # --- players -------------------------------------------------------------------
@@ -353,12 +513,14 @@ func _peer_ready() -> void:
 
 func _server_start_round() -> void:
 	var m := CLASSIC if round_num == 0 else randi() % MODIFIERS.size()
+	# First round on the classic dock; then a random map (Small Map only shrinks the dock).
+	var map := MAP_DOCK if round_num == 0 or m == TINY else randi() % MAPS.size()
 	round_num += 1
-	bc("_begin_round", [m])
+	bc("_begin_round", [m, map])
 
 
 @rpc("authority", "call_local", "reliable")
-func _begin_round(m: int) -> void:
+func _begin_round(m: int, map := 0) -> void:
 	_apply_modifier(m)
 	for pid in powerups.keys():
 		powerups[pid].queue_free()
@@ -367,7 +529,7 @@ func _begin_round(m: int) -> void:
 		b["node"].queue_free()
 	boats.clear()
 	boat_timer = randf_range(12.0, 18.0)
-	_build_tiles(6.5 if m == TINY else 10.5)
+	_build_map(map, m == TINY)
 	round_time = 0.0
 	drop_timer = 0.0
 	power_timer = 2.0
@@ -382,7 +544,7 @@ func _begin_round(m: int) -> void:
 
 
 func _countdown() -> void:
-	show_banner("Round %d" % round_num if round_num > 0 else "", "")
+	show_banner("Round %d" % round_num if round_num > 0 else "", MAPS[map_id])
 	await get_tree().create_timer(0.9).timeout
 	show_banner(MODIFIERS[modifier]["name"], MODIFIERS[modifier]["desc"])
 	await get_tree().create_timer(1.6).timeout
