@@ -257,7 +257,7 @@ void fragment() {
 
 const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway"]
 enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY }
-const PAD_LAUNCH := 12.0
+const PAD_LAUNCH := 15.5   # enough to reach the 8 m Fortress towers
 ## Physics layer 8: moving tiles players can ride. Only these count as "platforms" for
 ## CharacterBody3D, so rebuilding the map (freeing static tiles) can't fling anyone.
 const RIDE_LAYER := 1 << 7
@@ -339,14 +339,14 @@ func _build_map(id: int, tiny := false) -> void:
 						tiles.append(_add_tile(p, mat))
 				MAP_TIERS:
 					if d <= 14.0:
-						p.y += 2.7 if d < 5.0 else (1.8 if d < 8.5 else (0.9 if d < 11.5 else 0.0))
+						p.y += 3.6 if d < 5.0 else (2.4 if d < 8.5 else (1.2 if d < 11.5 else 0.0))
 						var t := _add_tile(p, mat)
 						tiles.append(t)
 						if d >= 11.5 and (x == 0 or z == 0):
 							_make_pad(t)
 				MAP_STONES:
 					if d <= 14.5 and (x + z) % 2 == 0:
-						p.y += 0.5 * posmod(x * 5 + z * 3, 3)
+						p.y += 0.9 * posmod(x * 5 + z * 3, 3)
 						var s := _add_tile(p, mat, 2.3, true)
 						tiles.append(s)
 						movers.append({"node": s, "kind": "bob", "base": p,
@@ -365,31 +365,31 @@ func _build_map(id: int, tiny := false) -> void:
 			movers.append({"node": shuttle, "kind": "shuttle", "base": base,
 				"axis": Vector3(10.0, 0, 0), "speed": 0.4})
 		MAP_FORTRESS:
-			# Central deck 3 m up (you can walk underneath), two ramps up to it.
-			_add_deck(-1, 1, -1, 1, 3.0)
-			_add_ramp(Vector3(0, 0, 13.5), Vector3(0, 3.0, 4.5))
-			_add_ramp(Vector3(0, 0, -13.5), Vector3(0, 3.0, -4.5))
-			# Corner towers 4.5 m up, only reachable with the bounce pad next to each one.
+			# Central deck 5 m up (you can walk underneath), two long ramps up to it.
+			_add_deck(-1, 1, -1, 1, 5.0)
+			_add_ramp(Vector3(0, 0, 15.5), Vector3(0, 5.0, 4.5))
+			_add_ramp(Vector3(0, 0, -15.5), Vector3(0, 5.0, -4.5))
+			# Corner towers 8 m up, only reachable with the bounce pad next to each one.
 			for sx in [-1, 1]:
 				for sz in [-1, 1]:
-					_add_deck(4 * sx, 4 * sx, 4 * sz, 4 * sz, 4.5)
+					_add_deck(4 * sx, 4 * sx, 4 * sz, 4 * sz, 8.0)
 					for t in tiles:
 						if is_equal_approx(t.position.x, 3 * TILE * sx) and is_equal_approx(t.position.z, 4 * TILE * sz) \
 								and t.position.y < 0.0:
 							_make_pad(t)
 		MAP_SKYWAY:
-			# Two mirrored towers: a mid deck (2.4 m) with a high deck (4.8 m) stacked over part of it.
+			# Two mirrored towers: a mid deck (4.5 m) with a high deck (9 m) stacked over part of it.
 			for s in [-1, 1]:
 				var lo := Vector2i(-5, -5) if s < 0 else Vector2i(1, 2)
 				var hi := Vector2i(-1, -2) if s < 0 else Vector2i(5, 5)
-				_add_deck(lo.x, hi.x, lo.y, hi.y, 2.4)                       # mid deck
+				_add_deck(lo.x, hi.x, lo.y, hi.y, 4.5)                       # mid deck
 				var hx := Vector2i(-5, -3) if s < 0 else Vector2i(3, 5)
 				var hz := Vector2i(-5, -4) if s < 0 else Vector2i(4, 5)
-				_add_deck(hx.x, hx.y, hz.x, hz.y, 4.8)                       # high deck above it
+				_add_deck(hx.x, hx.y, hz.x, hz.y, 9.0)                       # high deck above it
 				# ground -> mid deck, along X (reaches the deck's inner edge)
-				_add_ramp(Vector3(-3.0 * s, 0, 6.0 * s), Vector3(1.5 * s, 2.4, 6.0 * s))
+				_add_ramp(Vector3(-6.0 * s, 0, 6.0 * s), Vector3(1.5 * s, 4.5, 6.0 * s))     # 31 degrees
 				# mid deck -> high deck, along Z (reaches the high deck's front edge)
-				_add_ramp(Vector3(12.0 * s, 2.4, 6.0 * s), Vector3(12.0 * s, 4.8, 10.5 * s))
+				_add_ramp(Vector3(12.0 * s, 4.5, 4.7 * s), Vector3(12.0 * s, 9.0, 10.5 * s))  # 38 degrees
 
 
 func _make_pad(t: Node3D) -> void:
