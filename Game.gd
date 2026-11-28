@@ -47,6 +47,7 @@ var power_label: Label
 var pause_panel: PanelContainer
 var end_btn: Button
 var ping_label: Label
+var special_hud: Label
 var tile_mats: Array[StandardMaterial3D] = []
 
 
@@ -791,6 +792,12 @@ func _build_hud() -> void:
 	ping_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	root.add_child(ping_label)
 
+	special_hud = _label(17, 5)
+	special_hud.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	special_hud.position = Vector2(32, -36)
+	special_hud.add_theme_color_override("font_color", Color("ffd166"))
+	root.add_child(special_hud)
+
 	meter_label = _label(54, 14)
 	meter_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	meter_label.position = Vector2(30, -100)
@@ -923,6 +930,7 @@ func _update_hud() -> void:
 	# Local status
 	var lp := local_player()
 	meter_label.visible = lp != null and not lp.out
+	special_hud.visible = meter_label.visible
 	if lp == null:
 		return
 	var pct := int(lp.meter * 100)
@@ -934,4 +942,15 @@ func _update_hud() -> void:
 	if lp.charge > 0.15:
 		var c := clampf(lp.charge / lp.MAX_CHARGE, 0.0, 1.0)
 		parts.push_front("Charge %d%%" % int(c * 100))
+	# Status effects from other fish's specials
+	if lp.venom:
+		parts.append("Slowed (venom)")
+	if lp.bleed:
+		parts.append("Bleeding")
+	if lp.invuln and not lp.ragdolled:
+		parts.append("Protected")
+	if lp._dart_t > 0.0:
+		parts.append("Dart")
 	power_label.text = "   ".join(parts)
+	var sp: String = lp.fish["special_desc"]
+	special_hud.text = "%s - %s" % [lp.fish["name"], sp] if sp != "" else lp.fish["name"]

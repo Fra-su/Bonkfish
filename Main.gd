@@ -19,6 +19,7 @@ var skin_preview := -1
 var stats_label: Label
 var skin_row: HBoxContainer
 var skin_label: Label
+var special_label: Label
 
 # --- menu (not connected) ---
 var menu_panel: PanelContainer
@@ -332,6 +333,10 @@ func _build_lobby(col: VBoxContainer) -> void:
 	pick.add_child(_expand(fish_label))
 	pick.add_child(_button(">", func(): _cycle_fish(1)))
 	right.add_child(pick)
+	special_label = Label.new()
+	special_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	special_label.add_theme_color_override("font_color", Color("ffd166"))
+	right.add_child(special_label)
 	fish_stats = _small("")
 	right.add_child(fish_stats)
 	skin_row = HBoxContainer.new()
@@ -740,8 +745,8 @@ func _refresh_lobby() -> void:
 	fish_label.text = fs["name"] + (" (locked)" if locked else "")
 	fish_stats.text = "%s\nReach %d%%, power %d%%, speed %d%%, %.2fs between swings%s" % [
 		("Unlocks at level %d" % Accounts.FISH_UNLOCK.get(fish_preview, 1)) if locked else fs["desc"],
-		roundi(fs["reach"] * 100), roundi(fs["power"] * 100), roundi(fs["speed"] * 100), fs["cooldown"],
-		("\n" + fs["special_desc"]) if fs["special_desc"] != "" else ""]
+		roundi(fs["reach"] * 100), roundi(fs["power"] * 100), roundi(fs["speed"] * 100), fs["cooldown"], ""]
+	special_label.text = ("Special - " + fs["special_desc"]) if fs["special_desc"] != "" else "No special ability"
 
 	start_btn.visible = leader
 	start_btn.text = "Start" if Net.players.size() > 1 else "Start (solo)"

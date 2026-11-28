@@ -3,6 +3,8 @@
 FROM caddy:2-alpine
 
 COPY . /srv
-RUN printf ':{$PORT}\nroot * /srv\nencode gzip\nfile_server\n' > /etc/caddy/Caddyfile
+# "no-cache" = browsers may keep a copy but must check it's still current before using it
+# (cheap: unchanged files just get a 304). Without it, players kept running old builds.
+RUN printf ':{$PORT}\nroot * /srv\nencode gzip\nheader Cache-Control "no-cache"\nfile_server\n' > /etc/caddy/Caddyfile
 
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
