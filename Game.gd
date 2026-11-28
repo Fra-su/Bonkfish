@@ -358,7 +358,7 @@ func _build_map(id: int, tiny := false) -> void:
 						var s := _add_tile(p, mat, 2.3, true)
 						tiles.append(s)
 						movers.append({"node": s, "kind": "bob", "base": p,
-							"amp": 0.45, "speed": 1.2, "phase": float(x * 7 + z * 3)})
+							"amp": 1.0, "speed": 0.9, "phase": float(x * 7 + z * 3)})
 				MAP_FORTRESS, MAP_SKYWAY:
 					if absi(x) <= 5 and absi(z) <= 5:   # big flat ground floor
 						tiles.append(_add_tile(p, mat))
@@ -375,8 +375,8 @@ func _build_map(id: int, tiny := false) -> void:
 							p.y += 6.0
 						elif x >= 0:
 							p.y += 3.0
-						elif z == 0:
-							continue
+						elif absi(z) <= 1:
+							continue   # 3-tile river: too wide to jump, ride the logs
 						tiles.append(_add_tile(p, mat))
 				MAP_LIGHTHOUSE:
 					if d > 7.0 and d <= 15.0:            # rocky ring around the tower
@@ -435,9 +435,12 @@ func _build_map(id: int, tiny := false) -> void:
 			# Ramps up each ledge, logs bobbing in the river.
 			_add_ramp(Vector3(-7.5, 0, -6.0), Vector3(-1.5, 3.0, -6.0))
 			_add_ramp(Vector3(1.5, 3.0, 6.0), Vector3(7.5, 6.0, 6.0))
-			for x in range(-5, 0):
-				_add_mover_tile(Vector3(x * TILE, -0.4, 0), {"kind": "bob", "amp": 0.35, "speed": 1.6,
-					"phase": float(x) * 1.3}, 2.4)
+			# Logs drifting along the river in 3 lanes (alternating direction): time your jumps across.
+			for lane in [-1, 0, 1]:
+				for k in 2:
+					_add_mover_tile(Vector3(-12.0 + k * 6.0, -0.4, lane * TILE), {"kind": "shuttle",
+						"axis": Vector3(3.0 * (1 if lane != 0 else -1), 0, 0), "speed": 0.8,
+						"phase": float(lane) * 1.6}, 2.6)
 			# Raft riding diagonally up the outside of the cliffs, from the low ledge to the top one.
 			_add_mover_tile(Vector3(1.5, 2.6, 15.0), {"kind": "shuttle", "axis": Vector3(10.5, 3.0, 0), "speed": 0.35})
 		MAP_LIGHTHOUSE:
@@ -488,9 +491,9 @@ func _build_map(id: int, tiny := false) -> void:
 			# Rafts bobbing in the lagoon + one platform circling just inside the ring.
 			for k in 4:
 				var a := TAU * k / 4.0 + PI / 4.0
-				_add_mover_tile(Vector3(sin(a) * 5.0, -0.4, cos(a) * 5.0), {"kind": "bob", "amp": 0.3,
-					"speed": 1.4, "phase": float(k)}, 2.6)
-			_add_mover_tile(Vector3(0, -0.4, 0), {"kind": "bob", "amp": 0.25, "speed": 1.1, "phase": 0.5})
+				# rafts drift in small circles around the lagoon
+				_add_mover_tile(Vector3(sin(a) * 5.0, -0.4, cos(a) * 5.0), {"kind": "orbit", "radius": 2.0,
+					"speed": 0.6 * (1 if k % 2 == 0 else -1), "phase": float(k)}, 2.6)
 			_add_mover_tile(Vector3(0, -0.4, 0), {"kind": "orbit", "radius": 9.0, "speed": 0.32, "phase": 0.0})
 		MAP_FORTRESS:
 			# Central deck 5 m up (you can walk underneath), two long ramps up to it.
