@@ -16,7 +16,7 @@ var follow_dist := 7.0
 
 func _ready() -> void:
 	fov = 75.0
-	position = Vector3(0, 14, 18)
+	position = Vector3(0, 20, 25)
 	yaw = 0.0
 	pitch = -0.6
 

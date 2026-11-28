@@ -98,9 +98,9 @@ static func hold_info(i: int, aim: Vector3) -> Dictionary:
 		if mid[kk][1] > 0 and (best == -1 or w.call(kk) < w.call(best)):
 			best = kk
 	var grip: Vector3 = mid[best][0] / mid[best][1]
-	# Head direction in mesh space
+	# Head direction in mesh space: away from the tail (tail at the low end -> head points +axis).
 	var head := Vector3.ZERO
-	head[ax] = -1.0 if tail_low else 1.0
+	head[ax] = 1.0 if tail_low else -1.0
 	var up := Vector3.ZERO
 	up[up_ax] = 1.0
 	# Basis mapping mesh head->aim and mesh up->world-ish up.

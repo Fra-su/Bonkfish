@@ -171,6 +171,24 @@ func _pose(bone: String, q: Quaternion, k: float) -> void:
 	set_bone_pose_rotation(i, get_bone_pose_rotation(i).slerp(q, k))
 
 
+## Fish-arm keyframes: [arm rotation about Z (from rest), arm swing about X, elbow about X].
+## Found by a search that placed the fist and the fish tip where each phase should have them.
+const FISH_KEYS := {
+	"ready":  [0.10, 0.10, 1.20],    # fist at chest, fish upright
+	"wind":   [-0.20, -1.50, -2.00], # fist by the head, fish pointing back
+	"strike": [-0.50, 1.40, -1.80],  # fish swung out a metre in front
+	"follow": [-1.20, 1.10, -1.80],  # arm across the body
+}
+
+
+func _fish_arm(key: Array) -> Quaternion:
+	return Quaternion(Vector3.RIGHT, key[1]) * Quaternion(Vector3.BACK, key[0])
+
+
+func _fish_fore(key: Array) -> Quaternion:
+	return Quaternion(Vector3.RIGHT, key[2])
+
+
 ## phase: walk cycle time. moving: 0..1.5 run amount. airborne: in the air.
 ## vy: vertical speed. swing: bonk progress 0..1 (or -1 when not swinging).
 func animate(delta: float, phase: float, moving: float, airborne: bool, vy: float, swing: float) -> void:
@@ -196,39 +214,42 @@ func animate(delta: float, phase: float, moving: float, airborne: bool, vy: floa
 	# Free arm (left hand, -X): swings opposite its leg; flails up in the air.
 	var free_hang := lerpf(1.25, 0.2, a)
 	var free_swing := lerpf(s * 0.55 * m, -0.3, a)
-	# Fish arm: held down-forward with the elbow bent, so the fish points ahead.
-	var fish_hang := -1.35
-	var fish_swing := lerpf(0.75 + s * 0.15 * m, 0.3, a)
-	var fish_fore := 1.0
-	var fish_twist := 0.0
+	# Fish arm: keyframed poses (found by searching for where the fist and fish should be).
+	# Default "ready": fist in front of the chest, fish held upright like a club.
+	var arm_q := _fish_arm(FISH_KEYS["ready"])
+	var fore_q := _fish_fore(FISH_KEYS["ready"])
+	# Small bob while running, raised a bit in the air.
+	arm_q = Quaternion(Vector3.RIGHT, s * 0.12 * m - 0.2 * a) * arm_q
 
 	if swing >= 0.0:
-		# Bonk: wind up overhead & back, slam down across, recover.
-		var wind := 0.0
-		var strike := 0.0
+		# Bonk: ready -> wind up behind the head -> slam down in front -> follow through -> ready.
+		var from := "ready"
+		var to := "wind"
+		var t := 0.0
 		if swing < 0.3:
-			wind = ease(swing / 0.3, 0.5)
+			t = ease(swing / 0.3, 0.6)
 		elif swing < 0.5:
-			wind = 1.0 - (swing - 0.3) / 0.2
-			strike = ease((swing - 0.3) / 0.2, 2.0)
+			from = "wind"; to = "strike"
+			t = ease((swing - 0.3) / 0.2, 1.8)
+		elif swing < 0.7:
+			from = "strike"; to = "follow"
+			t = (swing - 0.5) / 0.2
 		else:
-			strike = 1.0 - ease((swing - 0.5) / 0.5, 0.6)
-		# wind: arm straight up, elbow cocked back. strike: arm thrust out in front.
-		fish_hang = lerpf(lerpf(fish_hang, 1.45, wind), -1.5, strike)
-		fish_swing = lerpf(lerpf(fish_swing, -0.4, wind), 1.55, strike)
-		fish_fore = lerpf(lerpf(fish_fore, -1.2, wind), 0.15, strike)
-		fish_twist = lerpf(0.0, 0.6, strike)
-		twist += 0.45 * wind - 0.6 * strike
-		lean += -0.25 * strike
+			from = "follow"; to = "ready"
+			t = ease((swing - 0.7) / 0.3, 0.5)
+		arm_q = _fish_arm(FISH_KEYS[from]).slerp(_fish_arm(FISH_KEYS[to]), t)
+		fore_q = _fish_fore(FISH_KEYS[from]).slerp(_fish_fore(FISH_KEYS[to]), t)
+		var wind := 1.0 - absf(swing - 0.3) / 0.3 if swing < 0.6 else 0.0
+		var strike := 1.0 - absf(swing - 0.55) / 0.25 if swing > 0.3 and swing < 0.8 else 0.0
+		twist += 0.45 * maxf(wind, 0.0) - 0.6 * maxf(strike, 0.0)
+		lean += -0.25 * maxf(strike, 0.0)
 		k = minf(1.0, delta * 30.0)  # snappy
 
 	_pose("hips", _q(0, -twist * 0.4, 0), k)
 	_pose("spine", _q(lean, twist, 0), k)
 	_pose("head", _q(-lean * 0.6, -twist * 0.8, 0), k)
-	# Hang angles are written relative to a T-pose; the mesh rests in an A-pose (~0.75 rad down).
-	_pose("arm_l", _arm(fish_hang + A_POSE, fish_swing, fish_twist), k)
-	# Elbows bend forward: rotation about the forearm's local Y (sign flips per side).
-	_pose("fore_l", _q(0, fish_fore, 0), k)
+	_pose("arm_l", arm_q, k)
+	_pose("fore_l", fore_q, k)
 	_pose("arm_r", _arm(free_hang - A_POSE, free_swing), k)
 	_pose("fore_r", _q(0, -lerpf(0.35 + 0.2 * m, 0.8, a), 0), k)
 

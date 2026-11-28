@@ -240,7 +240,7 @@ void fragment() {
 
 	spectator_cam = Camera3D.new()
 	add_child(spectator_cam)
-	spectator_cam.position = Vector3(0, 17, 19)
+	spectator_cam.position = Vector3(0, 24, 27)
 	spectator_cam.look_at(Vector3.ZERO)
 
 
@@ -303,7 +303,8 @@ func _build_map(id: int, tiny := false) -> void:
 	_clear_map()
 	map_id = id
 	map_t = 0.0
-	var n := 4
+	# Every map has height to it. Steps are at most 0.9 m (a normal jump clears ~1.5 m).
+	var n := 6
 	for x in range(-n, n + 1):
 		for z in range(-n, n + 1):
 			var p := Vector3(x * TILE, -0.4, z * TILE)
@@ -311,42 +312,61 @@ func _build_map(id: int, tiny := false) -> void:
 			var mat: Material = tile_mats[(x + z + 100) % 2]
 			match id:
 				MAP_DOCK:
-					if d <= (6.5 if tiny else 10.5):
+					if d <= (8.5 if tiny else 14.0):
+						# raised middle + a few scattered high spots
+						if d < 4.5:
+							p.y += 0.9
+						elif posmod(x * 7 + z * 13, 6) == 0:
+							p.y += 0.6
 						tiles.append(_add_tile(p, mat))
 				MAP_RING:
-					if d > 4.5 and d <= 11.0:
+					if d > 6.0 and d <= 14.5:
+						# the ring rises and falls in steps as you go around it
+						var sector := posmod(int(floor((atan2(p.x, p.z) + PI) / TAU * 8.0)), 8)
+						p.y += [0.0, 0.6, 1.2, 0.6, 0.0, 0.6, 1.2, 0.6][sector]
 						tiles.append(_add_tile(p, mat))
 				MAP_ISLANDS:
-					var on_a := Vector2(p.x + 7.5, p.z).length() <= 4.6
-					var on_b := Vector2(p.x - 7.5, p.z).length() <= 4.6
-					if on_a or on_b or (x == 0 and z == 0):   # two islands + one-tile bridge
+					var on_a := Vector2(p.x + 10.0, p.z).length() <= 6.0
+					var on_b := Vector2(p.x - 10.0, p.z).length() <= 6.0
+					var bridge := z == 0 and absi(x) <= 1
+					if on_a or on_b or bridge:
+						# one low island, one high island, the bridge climbs between them
+						if on_b:
+							p.y += 1.2
+						elif bridge:
+							p.y += 0.3 + 0.3 * (x + 1)
 						tiles.append(_add_tile(p, mat))
 				MAP_CROSS:
 					if absi(x) <= 1 or absi(z) <= 1:
+						# the arms climb toward a high middle (guarded by the sweeper)
+						var far := maxi(absi(x), absi(z))
+						p.y += maxf(0.0, 2.4 - 0.6 * far)
 						tiles.append(_add_tile(p, mat))
 				MAP_TIERS:
-					if d <= 10.5:
-						p.y += 1.8 if d < 4.0 else (0.9 if d < 7.5 else 0.0)
+					if d <= 14.0:
+						p.y += 2.7 if d < 5.0 else (1.8 if d < 8.5 else (0.9 if d < 11.5 else 0.0))
 						var t := _add_tile(p, mat)
 						tiles.append(t)
-						if d >= 7.5 and (x == 0 or z == 0):   # bounce pads on the outer ring
+						if d >= 11.5 and (x == 0 or z == 0):   # bounce pads on the outer ring
 							t.get_meta("mesh").material_override = pad_mat
 							pads.append(t)
 				MAP_STONES:
-					if d <= 11.0 and (x + z) % 2 == 0:
+					if d <= 14.5 and (x + z) % 2 == 0:
+						p.y += 0.5 * posmod(x * 5 + z * 3, 3)   # stones at three heights
 						var s := _add_tile(p, mat, 2.3, true)
 						tiles.append(s)
 						movers.append({"node": s, "kind": "bob", "base": p,
 							"amp": 0.45, "speed": 1.2, "phase": float(x * 7 + z * 3)})
 	match id:
 		MAP_RING:
-			_add_sweeper(11.0, 0.9, 0.8)
+			_add_sweeper(14.5, 1.5, 0.7)
 		MAP_CROSS:
-			_add_sweeper(7.5, 0.9, 1.0)
+			_add_sweeper(9.5, 3.0, 1.0)   # high up: only sweeps the raised middle
 		MAP_ISLANDS:
-			var shuttle := _add_tile(Vector3(0, -0.4, 6.0), tile_mats[2], TILE - 0.08, true)
-			movers.append({"node": shuttle, "kind": "shuttle", "base": Vector3(0, -0.4, 6.0),
-				"axis": Vector3(7.5, 0, 0), "speed": 0.45})
+			var base := Vector3(0, 0.2, 9.0)
+			var shuttle := _add_tile(base, tile_mats[2], TILE - 0.08, true)
+			movers.append({"node": shuttle, "kind": "shuttle", "base": base,
+				"axis": Vector3(10.0, 0.6, 0), "speed": 0.4})   # rises toward the high island
 
 
 ## A spinning bar over the center that knocks fish off (a hazard, not a solid wall).
