@@ -738,9 +738,10 @@ func _refresh_lobby() -> void:
 	var fs := Fish.stats(fish_preview)
 	var locked := not Accounts.fish_unlocked(fish_preview, Net.my_level())
 	fish_label.text = fs["name"] + (" (locked)" if locked else "")
-	fish_stats.text = "%s\nReach %d%%, power %d%%, speed %d%%, %.2fs between swings" % [
+	fish_stats.text = "%s\nReach %d%%, power %d%%, speed %d%%, %.2fs between swings%s" % [
 		("Unlocks at level %d" % Accounts.FISH_UNLOCK.get(fish_preview, 1)) if locked else fs["desc"],
-		roundi(fs["reach"] * 100), roundi(fs["power"] * 100), roundi(fs["speed"] * 100), fs["cooldown"]]
+		roundi(fs["reach"] * 100), roundi(fs["power"] * 100), roundi(fs["speed"] * 100), fs["cooldown"],
+		("\n" + fs["special_desc"]) if fs["special_desc"] != "" else ""]
 
 	start_btn.visible = leader
 	start_btn.text = "Start" if Net.players.size() > 1 else "Start (solo)"

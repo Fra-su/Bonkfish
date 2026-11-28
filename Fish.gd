@@ -1,32 +1,46 @@
 extends RefCounted
 ## The fish arsenal: stats per fish + automatic "hold it by the tail" placement for any fish mesh.
 
+## cooldown = seconds between swings (raised across the board so you can't chain-stun people).
+## special = id handled in Player.gd; special_desc is shown in the lobby.
 const LINEUP := [
 	{"name": "Koi", "mesh": "res://Fish/OBJ/Koi.obj", "desc": "Balanced",
-		"reach": 1.0, "power": 1.0, "cooldown": 0.5, "speed": 1.0, "length": 0.9},
+		"special": "", "special_desc": "",
+		"reach": 1.0, "power": 1.0, "cooldown": 0.65, "speed": 1.0, "length": 0.9},
 	{"name": "Swordfish", "mesh": "res://Fish/OBJ/Swordfish.obj", "desc": "Long reach, weak hits",
-		"reach": 1.5, "power": 0.8, "cooldown": 0.55, "speed": 1.0, "length": 1.4},
+		"special": "pierce", "special_desc": "Pierce: ignores Shield and Anchor",
+		"reach": 1.5, "power": 0.8, "cooldown": 0.7, "speed": 1.0, "length": 1.4},
 	{"name": "Pufferfish", "mesh": "res://Fish/OBJ/Puffer.obj", "desc": "Short reach, strong hits",
-		"reach": 0.8, "power": 1.5, "cooldown": 0.8, "speed": 0.9, "length": 0.7},
+		"special": "puff", "special_desc": "Puff: also pushes everyone close around you",
+		"reach": 0.8, "power": 1.5, "cooldown": 0.95, "speed": 0.9, "length": 0.7},
 	{"name": "Shark", "mesh": "res://Fish/OBJ/Shark.obj", "desc": "Strong, slow swing",
-		"reach": 1.2, "power": 1.35, "cooldown": 0.75, "speed": 0.85, "length": 1.2},
+		"special": "bite", "special_desc": "Bite: hits add extra damage",
+		"reach": 1.2, "power": 1.35, "cooldown": 0.9, "speed": 0.85, "length": 1.2},
 	{"name": "Tetra", "mesh": "res://Fish/OBJ/Tetra.obj", "desc": "Fast swing, weak hits",
-		"reach": 0.75, "power": 0.7, "cooldown": 0.28, "speed": 1.15, "length": 0.55},
+		"special": "dart", "special_desc": "Dart: short speed burst after a hit",
+		"reach": 0.75, "power": 0.7, "cooldown": 0.45, "speed": 1.15, "length": 0.55},
 	{"name": "Tuna", "mesh": "res://Fish/OBJ/Tuna.obj", "desc": "Slightly stronger",
-		"reach": 1.1, "power": 1.15, "cooldown": 0.6, "speed": 0.95, "length": 1.0},
+		"special": "", "special_desc": "",
+		"reach": 1.1, "power": 1.15, "cooldown": 0.75, "speed": 0.95, "length": 1.0},
 	{"name": "Anglerfish", "mesh": "res://Fish/OBJ/Anglerfish.obj", "desc": "Stronger while running",
-		"reach": 1.0, "power": 0.9, "cooldown": 0.55, "speed": 1.05, "length": 0.85},
+		"special": "lure", "special_desc": "Lure: up to +70% power at full sprint",
+		"reach": 1.0, "power": 0.9, "cooldown": 0.7, "speed": 1.05, "length": 0.85},
 	# Higher-level unlocks (sidegrades, not upgrades)
 	{"name": "Goldfish", "mesh": "res://Fish/OBJ/Goldfish.obj", "desc": "Light and quick",
-		"reach": 0.9, "power": 0.85, "cooldown": 0.38, "speed": 1.12, "length": 0.75},
+		"special": "lucky", "special_desc": "Lucky: 20% chance of a critical hit (x1.8)",
+		"reach": 0.9, "power": 0.85, "cooldown": 0.5, "speed": 1.12, "length": 0.75},
 	{"name": "Piranha", "mesh": "res://Fish/OBJ/Piranha.obj", "desc": "Short reach, fast strong hits",
-		"reach": 0.7, "power": 1.2, "cooldown": 0.4, "speed": 1.0, "length": 0.6},
+		"special": "bleed", "special_desc": "Bleed: target keeps taking damage for 2 s",
+		"reach": 0.7, "power": 1.2, "cooldown": 0.5, "speed": 1.0, "length": 0.6},
 	{"name": "Blobfish", "mesh": "res://Fish/OBJ/Blobfish.obj", "desc": "Very strong, very slow",
-		"reach": 0.85, "power": 1.7, "cooldown": 0.95, "speed": 0.8, "length": 0.75},
+		"special": "shockwave", "special_desc": "Shockwave: a full charge hits everyone nearby",
+		"reach": 0.85, "power": 1.7, "cooldown": 1.1, "speed": 0.8, "length": 0.75},
 	{"name": "Lionfish", "mesh": "res://Fish/OBJ/Lionfish.obj", "desc": "Good reach and power, slower feet",
-		"reach": 1.2, "power": 1.1, "cooldown": 0.6, "speed": 0.92, "length": 1.0},
+		"special": "venom", "special_desc": "Venom: target moves at half speed for 2.5 s",
+		"reach": 1.2, "power": 1.1, "cooldown": 0.75, "speed": 0.92, "length": 1.0},
 	{"name": "Goblin Shark", "mesh": "res://Fish/OBJ/GoblinShark.obj", "desc": "Long reach, strong, slow swing",
-		"reach": 1.35, "power": 1.25, "cooldown": 0.85, "speed": 0.88, "length": 1.15},
+		"special": "lunge", "special_desc": "Lunge: a charged attack dashes you forward",
+		"reach": 1.35, "power": 1.25, "cooldown": 1.0, "speed": 0.88, "length": 1.15},
 ]
 
 static var _cache := {}

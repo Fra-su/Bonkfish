@@ -698,6 +698,48 @@ func burst(pos: Vector3, color: Color, amount := 24) -> void:
 	get_tree().create_timer(1.5).timeout.connect(p.queue_free)
 
 
+## Floating text that rises and fades (e.g. "CRIT").
+func popup_text(pos: Vector3, text: String, color: Color) -> void:
+	var l := Label3D.new()
+	l.text = text
+	l.modulate = color
+	l.font_size = 64
+	l.outline_size = 10
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.no_depth_test = true
+	l.pixel_size = 0.006
+	l.position = pos
+	add_child(l)
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(l, "position:y", pos.y + 1.2, 0.8)
+	tw.tween_property(l, "modulate:a", 0.0, 0.8).set_delay(0.3)
+	tw.chain().tween_callback(l.queue_free)
+
+
+## Expanding flat ring on the ground (shockwave / puff).
+func ring(pos: Vector3, radius: float, color: Color) -> void:
+	var mi := MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.85
+	tm.outer_radius = 1.0
+	tm.rings = 32
+	mi.mesh = tm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mi.material_override = mat
+	mi.position = Vector3(pos.x, pos.y + 0.15, pos.z)
+	mi.scale = Vector3(0.3, 0.3, 0.3)
+	add_child(mi)
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3(radius, 1.0, radius), 0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 0.45)
+	tw.chain().tween_callback(mi.queue_free)
+
+
 # --- HUD -------------------------------------------------------------------------
 
 func _label(size: int, outline := 10) -> Label:

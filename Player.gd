@@ -41,6 +41,21 @@ var level := 0           # account level (0 = guest / no accounts)
 var skin := 0            # fish colour skin (Accounts.SKINS index)
 var sync: MultiplayerSynchronizer
 var _last_bonk_from := {}            # attacker id -> time (anti-spam)
+
+# --- anti-stunlock + fish specials ---
+const RECOVER_TIME := 0.6            # extra protection after the ragdoll ends
+enum { FX_PIERCE = 1, FX_BITE = 2, FX_BLEED = 4, FX_VENOM = 8, FX_CRIT = 16 }
+var invuln := false                  # synced: can't be hit (ragdolled or recovering) - everyone sees it
+var venom := false                   # synced: slowed by a Lionfish
+var bleed := false                   # synced: Piranha bleed ticking
+var _recover := 0.0
+var _venom_t := 0.0
+var _bleed_t := 0.0
+var _bleed_tick := 0.0
+var _dart_t := 0.0                   # Tetra speed burst
+var _fx_tick := 0.0                  # throttle for status particles
+var _predicted_at := -100000         # msec when this screen last predicted a hit on this fish
+var lure_light: OmniLight3D
 const MAX_BONK_POWER := 16.0         # biggest legit power (mega x mega-bonks x heavy fish x charge x run)
 
 
@@ -57,22 +72,23 @@ var _pred_t := 0.0
 
 
 ## Same launch formula receive_bonk() uses (velocity for a hit of `power` in `dir`).
-func _knockback(dir: Vector3, power: float) -> Vector3:
-	var resist := 0.35 if has_fx(Powerup.ANCHOR) else 1.0
+func _knockback(dir: Vector3, power: float, pierce := false) -> Vector3:
+	var resist := 0.35 if has_fx(Powerup.ANCHOR) and not pierce else 1.0
 	var mag := BASE_KNOCK * (1.0 + meter) * power * resist
 	return dir * mag + Vector3.UP * (3.5 + mag * 0.3)
 
 
 ## Called on the attacker's machine for the fish it just hit (a remote copy).
-func predict_bonk(dir: Vector3, power: float) -> void:
-	if is_multiplayer_authority() or out or ragdolled or _pred_t > 0.0:
+func predict_bonk(dir: Vector3, power: float, fx := 0) -> void:
+	if is_multiplayer_authority() or out or ragdolled or invuln or _pred_t > 0.0:
 		return  # i-frames: the real hit would be ignored too
-	flash = 0.25
-	if game:
-		game.burst(global_position + Vector3(0, 1.2, 0), Color("bde0fe") if has_fx(Powerup.BUBBLE) else Color.WHITE, 18)
-	if has_fx(Powerup.BUBBLE):
+	var pierce := fx & FX_PIERCE != 0
+	var blocked := has_fx(Powerup.BUBBLE) and not pierce
+	_hit_visuals(blocked, fx & FX_CRIT != 0)
+	_predicted_at = Time.get_ticks_msec()
+	if blocked:
 		return  # bubble pops, no launch
-	_pred_vel = _knockback(dir, minf(power, MAX_BONK_POWER))
+	_pred_vel = _knockback(dir, minf(power, MAX_BONK_POWER), pierce)
 	_pred_off = Vector3.ZERO
 	_pred_t = PRED_TIME
 
@@ -167,7 +183,8 @@ func _ready() -> void:
 	var cfg := SceneReplicationConfig.new()
 	# Movement streams at 30 Hz (not every frame); everything else only when it changes.
 	# Other players' copies glide toward net_pos instead of jumping between updates.
-	for prop in ["net_pos", "velocity", "facing", "meter", "fx_mask", "swing_id", "out", "ragdolled", "charge"]:
+	for prop in ["net_pos", "velocity", "facing", "meter", "fx_mask", "swing_id", "out", "ragdolled", "charge",
+			"invuln", "venom", "bleed"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		var always: bool = prop in ["net_pos", "velocity", "facing"]
@@ -250,8 +267,14 @@ func _physics_process(delta: float) -> void:
 	var gm: float = game.gravity_mult if game else 1.0
 	var fric: float = game.friction if game else 1.0
 
+	var was_stunned := stun > 0.0
 	stun = maxf(0.0, stun - delta)
 	ragdolled = stun > 0.0
+	if was_stunned and stun <= 0.0:
+		_recover = RECOVER_TIME   # a short grace period after getting up: no stunlocks
+	_recover = maxf(0.0, _recover - delta)
+	invuln = stun > 0.0 or _recover > 0.0
+	_update_statuses(delta)
 	shake = maxf(0.0, shake - delta)
 	var changed := false
 	for k in fx_time.keys():
@@ -282,8 +305,12 @@ func _physics_process(delta: float) -> void:
 			charge = 0.0
 		else:
 			charge = minf(charge + delta, MAX_CHARGE)
-	speed = SPRINT_SPEED if Input.is_action_pressed("sprint") else WALK_SPEED
+	speed = SPRINT_SPEED if Input.is_action_pressed("sprint") and not venom else WALK_SPEED
 	speed *= fish["speed"]
+	if venom:
+		speed *= 0.5
+	if _dart_t > 0.0:
+		speed *= 1.35
 	if has_fx(Powerup.ZOOM):
 		speed *= 1.6
 	if charge > 0.15:
@@ -354,13 +381,27 @@ func _do_slap(held := 0.0) -> void:
 	anim_player.play("slap")
 	# A charged swing is already wound up, so it lands sooner.
 	var hit_delay := 0.06 if charged else 0.14
-	await get_tree().create_timer(hit_delay).timeout
-	_hit_check(1.0 + (held / MAX_CHARGE if charged else 0.0))
+	var mult := 1.0 + (held / MAX_CHARGE if charged else 0.0)
+	var hit_ids := {}   # each fish can only be hit once per swing
+	if fish["special"] == "lunge" and held > 0.3 and stun <= 0.0:
+		# Goblin Shark: dash forward, hitting along the way
+		var fwd := -head.global_basis.z
+		fwd.y = 0
+		velocity += fwd.normalized() * 15.0 + Vector3.UP * 2.0
+		_room_rpc("_special_fx", ["lunge", global_position])
+		await get_tree().create_timer(hit_delay).timeout
+		_hit_check(mult, hit_ids)
+		await get_tree().create_timer(0.14).timeout
+		_hit_check(mult, hit_ids)
+		hit_delay += 0.14
+	else:
+		await get_tree().create_timer(hit_delay).timeout
+		_hit_check(mult, hit_ids)
 	await get_tree().create_timer(maxf(0.05, fish["cooldown"] - hit_delay)).timeout
 	can_slap = true
 
 
-func _hit_check(charge_mult := 1.0) -> void:
+func _hit_check(charge_mult := 1.0, hit_ids := {}) -> void:
 	if game == null:
 		return
 	var fwd := -head.global_basis.z
@@ -368,11 +409,25 @@ func _hit_check(charge_mult := 1.0) -> void:
 	fwd = fwd.normalized()
 	var mega := has_fx(Powerup.MEGA)
 	var reach: float = REACH * fish["reach"] * (1.4 if mega else 1.0)
-	var run_bonus := 1.0
-	if fish["name"] == "Anglerfish":  # hits harder the faster you're moving
-		run_bonus = 1.0 + clampf(Vector2(velocity.x, velocity.z).length() / SPRINT_SPEED, 0.0, 1.0) * 0.7
+	var special: String = fish["special"]
+	var base: float = (2.0 if mega else 1.0) * game.knock_mult * fish["power"] * charge_mult
+	if special == "lure":   # Anglerfish: hits harder the faster you're moving
+		base *= 1.0 + clampf(Vector2(velocity.x, velocity.z).length() / SPRINT_SPEED, 0.0, 1.0) * 0.7
+	var fx := 0
+	match special:
+		"pierce": fx |= FX_PIERCE
+		"bite": fx |= FX_BITE
+		"bleed": fx |= FX_BLEED
+		"venom": fx |= FX_VENOM
+	if special == "lucky" and randf() < 0.2:   # Goldfish: crit
+		base *= 1.8
+		fx |= FX_CRIT
+	var shockwave := special == "shockwave" and charge_mult >= 1.9   # Blobfish: full charge
+	if shockwave:
+		_room_rpc("_special_fx", ["shockwave", global_position])
+	var landed := false
 	for p in game.get_players():
-		if p == self or p.out or p.is_queued_for_deletion():
+		if p == self or p.out or p.is_queued_for_deletion() or hit_ids.has(p):
 			continue
 		if game.is_teams() and p.team == team:
 			continue  # no friendly fire
@@ -381,19 +436,31 @@ func _hit_check(charge_mult := 1.0) -> void:
 			continue
 		var flat := Vector3(to.x, 0, to.z)
 		var d := flat.length()
-		if d > reach or (d > 0.7 and fwd.dot(flat / d) < 0.3):
-			continue
 		var kdir := flat / d if d > 0.05 else fwd
-		var power: float = (2.0 if mega else 1.0) * game.knock_mult * fish["power"] * charge_mult * run_bonus
-		p.receive_bonk.rpc_id(p.get_multiplayer_authority(), kdir, power, multiplayer.get_unique_id())
-		p.predict_bonk(kdir, power)   # show the hit now instead of a round trip later
+		var power := base
+		var in_cone := d <= reach and (d <= 0.7 or fwd.dot(flat / d) >= 0.3)
+		if not in_cone:
+			if shockwave and d <= 3.8:
+				pass                      # everyone around gets the full hit
+			elif special == "puff" and d <= 2.6:
+				power *= 0.55             # Pufferfish: weaker push all around
+			else:
+				continue
+		hit_ids[p] = true
+		landed = true
+		p.receive_bonk.rpc_id(p.get_multiplayer_authority(), kdir, power, multiplayer.get_unique_id(), fx)
+		p.predict_bonk(kdir, power, fx)   # show the hit now instead of a round trip later
 		shake = maxf(shake, 0.12)
+	if landed and special == "puff":
+		_room_rpc("_special_fx", ["puff", global_position])
+	if landed and special == "dart":
+		_dart_t = 1.2                     # Tetra: speed burst after a hit
 
 
 @rpc("any_peer", "call_local", "reliable")
-func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
-	if not is_multiplayer_authority() or out or stun > 0.0:
-		return  # i-frames while ragdolled
+func receive_bonk(dir: Vector3, power: float, attacker: int, fx := 0) -> void:
+	if not is_multiplayer_authority() or out or invuln:
+		return  # i-frames while ragdolled and for a moment after getting up
 	# Don't trust the sender: must be a fish in this room, reasonable numbers, not spamming.
 	var from := multiplayer.get_remote_sender_id()
 	if from != 0:
@@ -407,21 +474,29 @@ func receive_bonk(dir: Vector3, power: float, attacker: int) -> void:
 		return
 	dir = Vector3(dir.x, 0, dir.z).normalized() if Vector2(dir.x, dir.z).length() > 0.01 else Vector3.FORWARD
 	power = clampf(power, 0.0, MAX_BONK_POWER)
-	if has_fx(Powerup.BUBBLE):
+	var pierce := fx & FX_PIERCE != 0   # Swordfish ignores Shield and Anchor
+	if has_fx(Powerup.BUBBLE) and not pierce:
 		fx_time.erase(Powerup.BUBBLE)
 		_recalc_fx()
 		velocity += dir * 3.0
-		_room_rpc("_bonk_fx", [true])
+		_room_rpc("_bonk_fx", [true, false])
 		return
-	velocity = _knockback(dir, power)
-	var resist := 0.35 if has_fx(Powerup.ANCHOR) else 1.0
+	velocity = _knockback(dir, power, pierce)
+	var resist := 0.35 if has_fx(Powerup.ANCHOR) and not pierce else 1.0
 	meter += 0.15 * power * (0.5 if resist < 1.0 else 1.0)
+	if fx & FX_BITE:
+		meter += 0.08
+	if fx & FX_BLEED:
+		_bleed_t = 2.0
+	if fx & FX_VENOM:
+		_venom_t = 2.5
 	stun = clampf(0.7 + meter * 0.3, 0.7, 1.6)
 	ragdolled = true
+	invuln = true
 	last_hitter = attacker
 	last_hit_time = Time.get_ticks_msec() / 1000.0
 	shake = 0.35
-	_room_rpc("_bonk_fx", [false])
+	_room_rpc("_bonk_fx", [false, fx & FX_CRIT != 0])
 
 
 ## Run `method` here and on this player's copy for everyone else in the room.
@@ -434,13 +509,56 @@ func _room_rpc(method: String, args := []) -> void:
 
 
 @rpc("any_peer", "call_local", "reliable")
-func _bonk_fx(blocked: bool) -> void:
+func _bonk_fx(blocked: bool, crit := false) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from != 0 and from != get_multiplayer_authority():
 		return
+	if Time.get_ticks_msec() - _predicted_at < 1000:
+		return   # this screen already showed the hit when it predicted it
+	_hit_visuals(blocked, crit)
+
+
+func _hit_visuals(blocked: bool, crit: bool) -> void:
 	flash = 0.25
-	if game:
-		game.burst(global_position + Vector3(0, 1.2, 0), Color("bde0fe") if blocked else Color.WHITE, 18)
+	if game == null:
+		return
+	var at := global_position + Vector3(0, 1.2, 0)
+	if blocked:
+		game.burst(at, Color("bde0fe"), 18)
+	elif crit:
+		game.burst(at, Color("ffd34d"), 40)
+		game.popup_text(at + Vector3(0, 0.6, 0), "CRIT", Color("ffd34d"))
+	else:
+		game.burst(at, Color.WHITE, 18)
+
+
+## Visuals for specials (sent by the fish's owner to everyone in the room).
+@rpc("any_peer", "call_local", "reliable")
+func _special_fx(kind: String, pos: Vector3) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if (from != 0 and from != get_multiplayer_authority()) or game == null:
+		return
+	match kind:
+		"shockwave":
+			game.ring(pos, 3.8, Color("c9a4ff"))
+		"puff":
+			game.ring(pos, 2.6, Color("ffe08a"))
+		"lunge":
+			game.burst(pos + Vector3(0, 1.0, 0), Color("9fb3c8"), 30)
+
+
+## Status effects on the fish's own machine: venom/bleed/dart timers (synced as flags).
+func _update_statuses(delta: float) -> void:
+	_venom_t = maxf(0.0, _venom_t - delta)
+	_dart_t = maxf(0.0, _dart_t - delta)
+	venom = _venom_t > 0.0
+	if _bleed_t > 0.0:
+		_bleed_t -= delta
+		_bleed_tick -= delta
+		if _bleed_tick <= 0.0:
+			_bleed_tick = 0.5
+			meter += 0.035          # Piranha bleed: a little damage every half second
+	bleed = _bleed_t > 0.0
 
 
 func apply_powerup(type: int) -> void:
@@ -468,6 +586,13 @@ func reset_for_round(pos: Vector3) -> void:
 	meter = 0.0
 	stun = 0.0
 	ragdolled = false
+	_recover = 0.0
+	invuln = false
+	_venom_t = 0.0
+	_bleed_t = 0.0
+	_dart_t = 0.0
+	venom = false
+	bleed = false
 	fx_time.clear()
 	_recalc_fx()
 	head.rotation.y = atan2(pos.x, pos.z)
@@ -548,7 +673,19 @@ func _process(delta: float) -> void:
 		bubble.scale = Vector3.ONE * (1.0 + sin(walk_t * 0.5) * 0.04)
 
 	flash = maxf(0.0, flash - delta)
-	overlay.albedo_color = Color(color, 0.45).lerp(Color(1, 1, 1, 0.9), flash * 4.0)
+	var tint := Color(color, 0.45)
+	if venom:
+		tint = Color(0.55, 0.15, 0.8, 0.6)            # Lionfish venom: purple
+	if invuln and not ragdolled:
+		tint.a *= 0.35 + 0.65 * float(int(walk_t * 3.0) % 2)   # blink while protected after getting up
+	overlay.albedo_color = tint.lerp(Color(1, 1, 1, 0.9), flash * 4.0)
+	# Status particles (throttled)
+	_fx_tick -= delta
+	if _fx_tick <= 0.0 and game and (bleed or venom):
+		_fx_tick = 0.25
+		game.burst(global_position + Vector3(0, 1.1, 0), Color("d62839") if bleed else Color("a35cff"), 4)
+	if lure_light:
+		lure_light.light_energy = 0.6 + 0.6 * clampf(Vector2(velocity.x, velocity.z).length() / SPRINT_SPEED, 0.0, 1.0)
 
 	var tags := ""
 	for k in Powerup.INFO.size():
@@ -607,6 +744,12 @@ func _build_visuals() -> void:
 	hand_fish.basis = hold["basis"].scaled(Vector3.ONE * fish_base_scale)
 	_place_fish_grip()
 	hand.add_child(hand_fish)
+	if fish["special"] == "lure":   # Anglerfish: its lure glows (brighter the faster you run)
+		lure_light = OmniLight3D.new()
+		lure_light.light_color = Color("9ff5ff")
+		lure_light.omni_range = 2.5
+		lure_light.position = Vector3(0, 0.3, -0.5)
+		hand.add_child(lure_light)
 	var tint: Color = preload("res://Accounts.gd").SKINS[clampi(skin, 0, preload("res://Accounts.gd").SKINS.size() - 1)]["color"]
 	var skin_mat: StandardMaterial3D = null
 	if tint.a > 0.0:
