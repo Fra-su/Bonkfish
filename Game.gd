@@ -51,6 +51,7 @@ var special_hud: Label
 var tile_mats: Array[StandardMaterial3D] = []
 var pad_mat: StandardMaterial3D
 var ramp_mat: StandardMaterial3D
+var mover_mat: StandardMaterial3D
 
 
 var room_code := ""   # set by Net before this node enters the tree (node name is "Room_<code>")
@@ -231,6 +232,9 @@ void fragment() {
 	water.position.y = FALL_Y + 1.0
 	add_child(water)
 
+	mover_mat = StandardMaterial3D.new()
+	mover_mat.albedo_color = Color("5d8aa8")   # moving platforms: blue-grey, easy to spot
+	mover_mat.roughness = 0.6
 	ramp_mat = StandardMaterial3D.new()
 	ramp_mat.albedo_color = Color("b07d4f")
 	ramp_mat.roughness = 0.9
@@ -255,13 +259,16 @@ void fragment() {
 # Every peer builds the same map from the map id the server sends. Moving parts are driven
 # by map_t (time since the round began), so they line up on every screen with no extra traffic.
 
-const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway", "Spire"]
-enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY, MAP_SPIRE }
+const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway", "Spire",
+	"Shipwreck", "Falls", "Lighthouse", "Scaffold", "Elevators", "Archipelago", "Peaks", "Atoll"]
+enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY, MAP_SPIRE,
+	MAP_SHIP, MAP_FALLS, MAP_LIGHTHOUSE, MAP_SCAFFOLD, MAP_ELEVATORS, MAP_ARCHI, MAP_PEAKS, MAP_ATOLL }
 const PAD_LAUNCH := 15.5   # enough to reach the 8 m Fortress towers
 ## Physics layer 8: moving tiles players can ride. Only these count as "platforms" for
 ## CharacterBody3D, so rebuilding the map (freeing static tiles) can't fling anyone.
 const RIDE_LAYER := 1 << 7
 const SPIRE_STEPS := 10
+const PEAKS := [Vector3(-10, 0, 6), Vector3(10, 3, 6), Vector3(0, 6, -10)]   # island centres (y = height)
 
 var map_id := MAP_DOCK
 var map_t := 0.0
@@ -358,6 +365,49 @@ func _build_map(id: int, tiny := false) -> void:
 				MAP_SPIRE:
 					if d > 6.5 and d <= 15.0:            # ground ring around the spire
 						tiles.append(_add_tile(p, mat))
+				MAP_SHIP:
+					if absi(z) <= 1 and absi(x) <= 5:   # the hull
+						tiles.append(_add_tile(p, mat))
+				MAP_FALLS:
+					if absi(x) <= 5 and absi(z) <= 4:
+						# three ledges stepping down toward -X; a river cuts the low ledge
+						if x >= 3:
+							p.y += 6.0
+						elif x >= 0:
+							p.y += 3.0
+						elif z == 0:
+							continue
+						tiles.append(_add_tile(p, mat))
+				MAP_LIGHTHOUSE:
+					if d > 7.0 and d <= 15.0:            # rocky ring around the tower
+						tiles.append(_add_tile(p, mat))
+				MAP_SCAFFOLD:
+					if absi(x) <= 4 and absi(z) <= 4:    # ground floor of the frame
+						tiles.append(_add_tile(p, mat))
+				MAP_ELEVATORS:
+					if absi(x) <= 4 and absi(z) <= 2:    # ground strip between the two high decks
+						tiles.append(_add_tile(p, mat))
+				MAP_ARCHI:
+					var on := d <= 5.0
+					for k in 6:
+						var c := Vector2(sin(TAU * k / 6.0), cos(TAU * k / 6.0)) * 13.0
+						if Vector2(p.x, p.z).distance_to(c) <= 4.3:
+							on = true
+					if on:
+						tiles.append(_add_tile(p, mat))
+				MAP_PEAKS:
+					# three islands at 0, 3 and 6 m
+					for isl in PEAKS:
+						if Vector2(p.x, p.z).distance_to(Vector2(isl.x, isl.z)) <= 5.2:
+							p.y += isl.y
+							tiles.append(_add_tile(p, mat))
+							break
+				MAP_ATOLL:
+					# broken ring of islets: jump the gaps
+					if d > 11.0 and d <= 15.5:
+						var sector := posmod(int(floor((atan2(p.x, p.z) + PI) / TAU * 24.0)), 4)
+						if sector != 3:   # ~3 m gaps: a running jump clears them
+							tiles.append(_add_tile(p, mat))
 	match id:
 		MAP_RING:
 			_add_sweeper(14.5, 0.9, 0.7)
@@ -374,6 +424,74 @@ func _build_map(id: int, tiny := false) -> void:
 				var a := TAU * i / SPIRE_STEPS
 				tiles.append(_add_tile(Vector3(sin(a) * 9.0, 1.2 * (i + 1) - 0.4, cos(a) * 9.0), tile_mats[2]))
 			_add_deck(-1, 1, -1, 1, 1.2 * (SPIRE_STEPS + 1))
+		MAP_SHIP:
+			# Aft deck 2.5 m (ramp from the hull), mast top 7 m (bounce pad), cargo boom circling at 4.5 m.
+			_add_deck(4, 5, -1, 1, 2.5)
+			_add_ramp(Vector3(3.0, 0, 0), Vector3(10.5, 2.5, 0))
+			_add_deck(-1, -1, 0, 0, 7.0)
+			_pad_at(Vector3(-9.0, 0, 0))
+			_add_mover_tile(Vector3(0, 4.1, 0), {"kind": "orbit", "radius": 7.5, "speed": 0.35, "phase": 0.0})
+		MAP_FALLS:
+			# Ramps up each ledge, logs bobbing in the river.
+			_add_ramp(Vector3(-7.5, 0, -6.0), Vector3(-1.5, 3.0, -6.0))
+			_add_ramp(Vector3(1.5, 3.0, 6.0), Vector3(7.5, 6.0, 6.0))
+			for x in range(-5, 0):
+				_add_mover_tile(Vector3(x * TILE, -0.4, 0), {"kind": "bob", "amp": 0.35, "speed": 1.6,
+					"phase": float(x) * 1.3}, 2.4)
+			# Raft riding diagonally up the outside of the cliffs, from the low ledge to the top one.
+			_add_mover_tile(Vector3(1.5, 2.6, 15.0), {"kind": "shuttle", "axis": Vector3(10.5, 3.0, 0), "speed": 0.35})
+		MAP_LIGHTHOUSE:
+			# Tower top 12 m. Balcony at 6 m (ramp up from the rocks); elevator up the other side.
+			_add_deck(-1, 1, -1, 1, 12.0)
+			_add_deck(2, 2, -1, 1, 6.0)
+			_add_ramp(Vector3(15.0, 0, 0), Vector3(7.5, 6.0, 0))   # 39 degrees
+			_add_mover_tile(Vector3(-6.0, 5.6, 0), {"kind": "shuttle", "axis": Vector3(0, 6.0, 0), "speed": 0.4,
+				"phase": -PI / 2})
+		MAP_SCAFFOLD:
+			# Storey 2 at 3 m (ramps), storey 3 at 6 m (bounce pads on storey 2), a platform circling at 4.5 m.
+			for s in [Vector2i(2, 2), Vector2i(-2, 2), Vector2i(2, -2), Vector2i(-2, -2)]:
+				_add_deck(s.x, s.x, s.y, s.y, 3.0)
+			for s in [Vector2i(0, 3), Vector2i(0, -3), Vector2i(3, 0), Vector2i(-3, 0)]:
+				_add_deck(s.x, s.x, s.y, s.y, 3.0)
+			_add_ramp(Vector3(0, 0, 3.0), Vector3(0, 3.0, 7.5))
+			_add_ramp(Vector3(0, 0, -3.0), Vector3(0, 3.0, -7.5))
+			_add_deck(-1, 1, -1, 1, 6.5)
+			for t in tiles.duplicate():
+				if absf(t.position.y - 2.6) < 0.05 and absf(t.position.x) > 4.0 and absf(t.position.z) > 4.0:
+					_make_pad(t)
+			_add_mover_tile(Vector3(0, 4.1, 0), {"kind": "orbit", "radius": 9.0, "speed": 0.3, "phase": 0.0})
+		MAP_ELEVATORS:
+			# Two decks at 8 m joined by a high bridge; an elevator up to each deck.
+			_add_deck(-4, 4, 4, 5, 8.0)
+			_add_deck(-4, 4, -5, -4, 8.0)
+			_add_deck(4, 4, -3, 3, 8.0)
+			_add_mover_tile(Vector3(0, 3.6, 9.0), {"kind": "shuttle", "axis": Vector3(0, 4.0, 0), "speed": 0.45})
+			_add_mover_tile(Vector3(0, 3.6, -9.0), {"kind": "shuttle", "axis": Vector3(0, 4.0, 0), "speed": 0.45,
+				"phase": PI})
+		MAP_ARCHI:
+			# Three platforms circling between the middle island and the outer ones.
+			for k in 3:
+				_add_mover_tile(Vector3(0, -0.4, 0), {"kind": "orbit", "radius": 7.0, "speed": 0.28,
+					"phase": TAU * k / 3.0})
+		MAP_PEAKS:
+			# Platforms that travel up and across between the islands.
+			for k in 3:
+				var a: Vector3 = PEAKS[k]
+				var b: Vector3 = PEAKS[(k + 1) % 3]
+				var mid := (a + b) * 0.5
+				var dir := Vector3(b.x - a.x, 0, b.z - a.z)
+				var half := dir.length() * 0.5 - 5.0      # stop at each island's edge
+				_add_mover_tile(Vector3(mid.x, mid.y - 0.4, mid.z), {"kind": "shuttle",
+					"axis": dir.normalized() * half + Vector3(0, (b.y - a.y) * 0.5, 0), "speed": 0.35,
+					"phase": float(k)})
+		MAP_ATOLL:
+			# Rafts bobbing in the lagoon + one platform circling just inside the ring.
+			for k in 4:
+				var a := TAU * k / 4.0 + PI / 4.0
+				_add_mover_tile(Vector3(sin(a) * 5.0, -0.4, cos(a) * 5.0), {"kind": "bob", "amp": 0.3,
+					"speed": 1.4, "phase": float(k)}, 2.6)
+			_add_mover_tile(Vector3(0, -0.4, 0), {"kind": "bob", "amp": 0.25, "speed": 1.1, "phase": 0.5})
+			_add_mover_tile(Vector3(0, -0.4, 0), {"kind": "orbit", "radius": 9.0, "speed": 0.32, "phase": 0.0})
 		MAP_FORTRESS:
 			# Central deck 5 m up (you can walk underneath), two long ramps up to it.
 			_add_deck(-1, 1, -1, 1, 5.0)
@@ -410,6 +528,26 @@ func _build_map(id: int, tiny := false) -> void:
 					if is_equal_approx(t.position.x, 9.0 * s) and is_equal_approx(t.position.z, 12.0 * s) \
 							and absf(t.position.y - 8.6) < 0.1:
 						_make_pad(t)
+
+
+## A moving tile you can ride. `m` holds the mover settings (kind + its parameters); the tile
+## starts at `pos`, which is also the centre / base of its motion.
+func _add_mover_tile(pos: Vector3, m: Dictionary, size := TILE - 0.08) -> Node3D:
+	var t := _add_tile(pos, mover_mat, size, true)
+	m["node"] = t
+	m["base"] = pos
+	m["phase"] = m.get("phase", 0.0)
+	movers.append(m)
+	return t
+
+
+## Turn the ground tile at this x/z position into a bounce pad.
+func _pad_at(pos: Vector3) -> void:
+	for t in tiles:
+		if is_equal_approx(t.position.x, pos.x) and is_equal_approx(t.position.z, pos.z) \
+				and absf(t.position.y - (pos.y - 0.4)) < 0.1:
+			_make_pad(t)
+			return
 
 
 func _make_pad(t: Node3D) -> void:
@@ -483,8 +621,11 @@ func _physics_process(delta: float) -> void:
 		match m["kind"]:
 			"bob":
 				node.position.y = m["base"].y + sin(map_t * m["speed"] + m["phase"]) * m["amp"]
-			"shuttle":
-				node.position = m["base"] + m["axis"] * sin(map_t * m["speed"])
+			"shuttle":   # back and forth along an axis (horizontal, vertical = elevator, or diagonal)
+				node.position = m["base"] + m["axis"] * sin(map_t * m["speed"] + m.get("phase", 0.0))
+			"orbit":     # circles around a centre
+				var a: float = map_t * m["speed"] + m["phase"]
+				node.position = m["base"] + Vector3(sin(a), 0, cos(a)) * m["radius"]
 			"sweeper":
 				node.rotation.y = map_t * m["speed"]
 
