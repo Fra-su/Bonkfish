@@ -126,9 +126,9 @@ func _build_menu(col: VBoxContainer) -> void:
 	name_edit.max_length = 14
 	name_edit.placeholder_text = "Fish"
 	m.add_child(name_edit)
-	m.add_child(_small("Server (leave blank for the official one)"))
+	m.add_child(_small("Joining a friend's game? Paste their address here. Otherwise leave it empty."))
 	server_edit = LineEdit.new()
-	server_edit.placeholder_text = "Official server"
+	server_edit.placeholder_text = "Empty = public servers (e.g. abc-def.trycloudflare.com)"
 	m.add_child(server_edit)
 	m.add_child(_button("Play Online", _on_play_online))
 	if OS.has_feature("web"):
@@ -734,7 +734,7 @@ func _load_settings() -> void:
 		var s = JavaScriptBridge.eval("new URLSearchParams(location.search).get('server') || ''", true)
 		if typeof(s) == TYPE_STRING and s != "":
 			server_edit.text = s
-			status_label.text = "Server set from invite link."
+			status_label.text = "Invite link opened - press Play Online to join your friend's game."
 		if ip_edit:
 			ip_edit.text = cf.get_value("p", "ip", "")
 
