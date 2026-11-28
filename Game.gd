@@ -255,12 +255,13 @@ void fragment() {
 # Every peer builds the same map from the map id the server sends. Moving parts are driven
 # by map_t (time since the round began), so they line up on every screen with no extra traffic.
 
-const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway"]
-enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY }
+const MAPS := ["Dock", "Ring", "Islands", "Cross", "Tiers", "Stones", "Fortress", "Skyway", "Spire"]
+enum { MAP_DOCK, MAP_RING, MAP_ISLANDS, MAP_CROSS, MAP_TIERS, MAP_STONES, MAP_FORTRESS, MAP_SKYWAY, MAP_SPIRE }
 const PAD_LAUNCH := 15.5   # enough to reach the 8 m Fortress towers
 ## Physics layer 8: moving tiles players can ride. Only these count as "platforms" for
 ## CharacterBody3D, so rebuilding the map (freeing static tiles) can't fling anyone.
 const RIDE_LAYER := 1 << 7
+const SPIRE_STEPS := 10
 
 var map_id := MAP_DOCK
 var map_t := 0.0
@@ -339,10 +340,10 @@ func _build_map(id: int, tiny := false) -> void:
 						tiles.append(_add_tile(p, mat))
 				MAP_TIERS:
 					if d <= 14.0:
-						p.y += 3.6 if d < 5.0 else (2.4 if d < 8.5 else (1.2 if d < 11.5 else 0.0))
+						p.y += 1.2 * float(maxi(0, 4 - maxi(absi(x), absi(z))))   # 5 square rings, 1 tile wide: 4.8 ... 0
 						var t := _add_tile(p, mat)
 						tiles.append(t)
-						if d >= 11.5 and (x == 0 or z == 0):
+						if maxi(absi(x), absi(z)) >= 4 and (x == 0 or z == 0):
 							_make_pad(t)
 				MAP_STONES:
 					if d <= 14.5 and (x + z) % 2 == 0:
@@ -354,6 +355,9 @@ func _build_map(id: int, tiny := false) -> void:
 				MAP_FORTRESS, MAP_SKYWAY:
 					if absi(x) <= 5 and absi(z) <= 5:   # big flat ground floor
 						tiles.append(_add_tile(p, mat))
+				MAP_SPIRE:
+					if d > 6.5 and d <= 15.0:            # ground ring around the spire
+						tiles.append(_add_tile(p, mat))
 	match id:
 		MAP_RING:
 			_add_sweeper(14.5, 0.9, 0.7)
@@ -364,11 +368,21 @@ func _build_map(id: int, tiny := false) -> void:
 			var shuttle := _add_tile(base, tile_mats[2], TILE - 0.08, true)
 			movers.append({"node": shuttle, "kind": "shuttle", "base": base,
 				"axis": Vector3(10.0, 0, 0), "speed": 0.4})
+		MAP_SPIRE:
+			# 10 floating steps spiralling up around the middle, 1.2 m apart, then a 12 m summit.
+			for i in SPIRE_STEPS:
+				var a := TAU * i / SPIRE_STEPS
+				tiles.append(_add_tile(Vector3(sin(a) * 9.0, 1.2 * (i + 1) - 0.4, cos(a) * 9.0), tile_mats[2]))
+			_add_deck(-1, 1, -1, 1, 1.2 * (SPIRE_STEPS + 1))
 		MAP_FORTRESS:
 			# Central deck 5 m up (you can walk underneath), two long ramps up to it.
 			_add_deck(-1, 1, -1, 1, 5.0)
 			_add_ramp(Vector3(0, 0, 15.5), Vector3(0, 5.0, 4.5))
 			_add_ramp(Vector3(0, 0, -15.5), Vector3(0, 5.0, -4.5))
+			# Side balconies 2.5 m up (west and east), each with a ramp from the ground.
+			for sx in [-1, 1]:
+				_add_deck(5 * sx, 4 * sx, -1, 1, 2.5)
+				_add_ramp(Vector3(5.0 * sx, 0, 0), Vector3(10.5 * sx, 2.5, 0))
 			# Corner towers 8 m up, only reachable with the bounce pad next to each one.
 			for sx in [-1, 1]:
 				for sz in [-1, 1]:
@@ -390,6 +404,12 @@ func _build_map(id: int, tiny := false) -> void:
 				_add_ramp(Vector3(-6.0 * s, 0, 6.0 * s), Vector3(1.5 * s, 4.5, 6.0 * s))     # 31 degrees
 				# mid deck -> high deck, along Z (reaches the high deck's front edge)
 				_add_ramp(Vector3(12.0 * s, 4.5, 4.7 * s), Vector3(12.0 * s, 9.0, 10.5 * s))  # 38 degrees
+				# Summit 13.5 m up over the high deck, reached with a bounce pad on the high deck.
+				_add_deck(5 * s, 5 * s, 5 * s, 5 * s, 13.5)
+				for t in tiles:
+					if is_equal_approx(t.position.x, 9.0 * s) and is_equal_approx(t.position.z, 12.0 * s) \
+							and absf(t.position.y - 8.6) < 0.1:
+						_make_pad(t)
 
 
 func _make_pad(t: Node3D) -> void:
